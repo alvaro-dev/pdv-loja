@@ -1,0 +1,1648 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <title>PDV - Sistema de Vendas</title>
+    <style>
+        body { 
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
+            background-color: #f4f6f9; 
+            margin: 0; 
+            padding: 30px; 
+            display: flex; 
+            flex-direction: column; 
+            align-items: center; 
+        }
+        .container { 
+            background-color: white; 
+            padding: 35px; 
+            border-radius: 8px; 
+            box-shadow: 0 4px 10px rgba(0,0,0,0.08); 
+            width: 100%; 
+            max-width: 550px; 
+        }
+        .login-box { max-width: 400px; margin-top: 50px; }
+        
+        h1, h2, h3 { text-align: center; color: #333; margin-bottom: 25px; }
+        .form-group { margin-bottom: 22px; }
+        label { display: block; margin-bottom: 8px; font-weight: bold; color: #555; font-size: 15px; }
+        input, select { 
+            width: 100%; 
+            padding: 12px; 
+            border: 1px solid #ccc; 
+            border-radius: 4px; 
+            box-sizing: border-box; 
+            font-size: 16px; 
+        }
+        input:disabled { background-color: #e9ecef; color: #495057; cursor: not-allowed; }
+        .campo-total { font-size: 20px; font-weight: bold; color: #2b2b2b; border: 2px solid #007bff; }
+        
+        button { 
+            width: 100%; padding: 16px; font-size: 18px; font-weight: bold; 
+            cursor: pointer; background-color: #007bff; color: white; 
+            border: none; border-radius: 4px; transition: background 0.2s; margin-top: 10px;
+        }
+        button:hover { background-color: #0056b3; }
+        .btn-logout { background-color: #dc3545; margin-top: 20px; padding: 10px; font-size: 14px; }
+        .btn-logout:hover { background-color: #bd2130; }
+
+        .msg-box { margin-top: 20px; padding: 12px; border-radius: 4px; text-align: center; font-weight: bold; display: none; font-size: 15px; }
+        .online { background-color: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+        .offline { background-color: #fff3cd; color: #856404; border: 1px solid #ffeeba; }
+        .erro { background-color: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+        
+        /* Controle das telas */
+        #telaLogin { display: block; } 
+        #telaAbertura { display: none; }
+        #telaCaixa { display: none; } 
+    </style>
+</head>
+<body>
+
+    <div id="telaLogin" class="container login-box">
+        <h2>Acesso ao Operador</h2>
+        <div class="form-group">
+            <label for="loginUsuario">Usuário:</label>
+            <input type="text" id="loginUsuario" placeholder="Digite o usuário" autofocus>
+        </div>
+        <div class="form-group">
+            <label for="loginSenha">Senha:</label>
+            <input type="password" id="loginSenha" placeholder="Digite a senha">
+        </div>
+
+        <div class="form-group" style="display: flex; align-items: center; gap: 10px; margin-bottom: 20px;">
+            <input type="checkbox" id="lembrarSenha" style="width: auto; cursor: pointer;">
+            <label for="lembrarSenha" style="margin-bottom: 0; cursor: pointer; font-size: 14px; color: #666;">Manter-se conectado neste terminal</label>
+        </div>
+
+        <button id="btnLogar">Entrar no Sistema</button>
+        
+        <div id="sucessoLogin" class="msg-box online" style="margin-top: 20px;"></div>
+        
+        <div id="erroLogin" class="msg-box erro"></div>
+    </div>
+
+    <div id="telaAbertura" class="container login-box">
+        <h2>Abertura de Caixa</h2>
+        <p style="text-align: center; color: #666; margin-bottom: 20px;">Este terminal encontra-se fechado. Insira o valor de troco inicial para abrir o turno.</p>
+        
+        <div class="form-group">
+            <label for="valorAbertura">Fundo de Caixa / Troco Inicial (R$):</label>
+            <input type="number" id="valorAbertura" min="0.00" step="0.01" value="0.00" style="font-size: 18px; font-weight: bold; text-align: center;">
+        </div>
+        <button id="btnConfirmarAbertura" style="background-color: #28a745;">Confirmar Abertura</button>
+    </div>
+
+    <!-- ==================== TELA DE FECHAMENTO DE CAIXA ==================== -->
+    <div id="telaFechamento" class="container login-box" style="display: none; max-width: 500px;">
+        <h2>Fechamento de Caixa</h2>
+        
+        <div id="erroFechamento" class="msg-box erro" style="margin-bottom: 15px; margin-top: 0;"></div>
+
+        <div style="background: #f8f9fa; padding: 15px; border-radius: 4px; margin-bottom: 15px; font-size: 15px; text-align: left; border-left: 4px solid #007bff;">
+            <div style="margin-bottom: 5px;">💰 Fundo Inicial (Dinheiro): <span id="resumoFundo" style="font-weight: bold;">R$ 0.00</span></div>
+            <div style="font-size: 16px; margin-top: 8px; border-bottom: 1px dashed #ccc; padding-bottom: 8px;">
+                💵 **Dinheiro Esperado na Gaveta:** <span id="resumoDinheiroEsperado" style="font-weight: bold; color: #28a745;">R$ 0.00</span>
+            </div>
+            <div style="font-size: 14px; margin-top: 8px; color: #6c757d;">
+                📈 Faturamento Eletrônico (Banco): <span id="resumoEletronicoEsperado" style="font-weight: bold;">R$ 0.00</span>
+            </div>
+        </div>
+
+        <div class="form-group" style="text-align: left; background-color: #fff3cd; padding: 15px; border-radius: 4px; border: 1px solid #ffeeba;">
+            <label for="valorContadoGaveta" style="color: #856404; font-size: 14px;">🔎 Digite o valor TOTAL em DINHEIRO contado na gaveta:</label>
+            <input type="number" id="valorContadoGaveta" min="0.00" step="0.01" value="0.00" style="font-size: 18px; font-weight: bold; text-align: center; border-color: #ffeeba;">
+            
+            <div id="resultadoConferencia" style="font-size: 13px; font-weight: bold; text-align: center; margin-top: 10px; display: none;"></div>
+        </div>
+
+        <h3 style="font-size: 15px; text-align: left; margin-bottom: 10px; color: #555;">📋 Resumo por Forma de Pagamento</h3>
+        
+        <table style="width: 100%; border-collapse: collapse; margin-bottom: 20px; font-size: 14px; text-align: left;">
+            <thead>
+                <tr style="background-color: #e9ecef;">
+                    <th style="padding: 8px; border: 1px solid #dee2e6;">Forma</th>
+                    <th style="padding: 8px; border: 1px solid #dee2e6; color: green;">Entradas</th>
+                    <th style="padding: 8px; border: 1px solid #dee2e6; color: red;">Saídas</th>
+                    <th style="padding: 8px; border: 1px solid #dee2e6; color: #007bff;">Saldo Líquido</th>
+                </tr>
+            </thead>
+            <tbody id="tabelaDetalheCorpo">
+                </tbody>
+        </table>
+
+        <p style="text-align: center; font-weight: bold; color: #dc3545; margin-bottom: 15px;">⚠️ Confirma o encerramento definitivo deste turno?</p>
+        <input type="hidden" id="fechamentoMovimentoId">
+        <input type="hidden" id="saldoBrutoOculto"> <div style="display: flex; gap: 15px;">
+            <button id="btnConfirmarFechamento" style="background-color: #dc3545; flex: 1; margin-top: 0;">Sim, Fechar</button>
+            <button id="btnCancelarFechamento" style="background-color: #6c757d; flex: 1; margin-top: 0;">Não, Voltar</button>
+        </div>
+    </div>
+
+    <div id="telaHistorico" class="container" style="display: none; max-width: 850px;">
+        <h2>📊 Histórico de Turnos Encerrados</h2>
+        
+        <div style="background: #f8f9fa; padding: 15px; border-radius: 6px; margin-bottom: 20px; border: 1px solid #dee2e6; display: flex; gap: 15px; align-items: flex-end; justify-content: center;">
+            <div style="flex: 1; min-width: 150px; text-align: left;">
+                <label for="filtroDataInicio" style="font-size: 13px; margin-bottom: 4px;">Data Inicial:</label>
+                <input type="date" id="filtroDataInicio" style="padding: 8px; font-size: 14px;">
+            </div>
+            <div style="flex: 1; min-width: 150px; text-align: left;">
+                <label for="filtroDataFim" style="font-size: 13px; margin-bottom: 4px;">Data Final:</label>
+                <input type="date" id="filtroDataFim" style="padding: 8px; font-size: 14px;">
+            </div>
+            <button id="btnAplicarFiltroHist" style="margin-top: 0; padding: 10px 20px; font-size: 14px; width: auto; background-color: #28a745;">🔍 Filtrar</button>
+        </div>
+
+        <button id="btnVoltarHistorico" style="background-color: #6c757d; margin-bottom: 15px; width: auto;">⬅️ Voltar ao Caixa</button>
+        
+        <p style="font-size: 13px; color: #666; text-align: left; margin-bottom: 5px;">💡 Clique em qualquer linha para ver o extrato detalhado do turno.</p>
+        
+        <table style="width: 100%; border-collapse: collapse; margin-bottom: 20px; font-size: 14px; text-align: left;">
+            <thead>
+                <tr style="background-color: #e9ecef;">
+                    <th style="padding: 8px; border: 1px solid #dee2e6;">Caixa</th>
+                    <th style="padding: 8px; border: 1px solid #dee2e6;">Operador</th>
+                    <th style="padding: 8px; border: 1px solid #dee2e6;">Abertura</th>
+                    <th style="padding: 8px; border: 1px solid #dee2e6;">Fechamento</th>
+                    <th style="padding: 8px; border: 1px solid #dee2e6; color: green;">Fundo Inicial</th>
+                    <th style="padding: 8px; border: 1px solid #dee2e6; color: #007bff;">Saldo Final</th>
+                    <th style="padding: 8px; border: 1px solid #dee2e6; color: #856404;">Informado (Gaveta)</th>
+                    <th style="padding: 8px; border: 1px solid #dee2e6;">Diferença</th>
+                </tr>
+            </thead>
+            <tbody id="tabelaHistoricoCorpo">
+                </tbody>
+        </table>
+
+        <div style="display: flex; justify-content: center; align-items: center; gap: 15px; margin-top: 15px; margin-bottom: 25px;">
+            <button id="btnHistAnterior" style="margin-top: 0; padding: 5px 15px; background-color: #6c757d; font-size: 13px; max-width: 100px;">Anterior</button>
+            <span id="txtPaginaHist" style="font-size: 14px; font-weight: bold; color: #555;">Página 1</span>
+            <button id="btnHistProximo" style="margin-top: 0; padding: 5px 15px; background-color: #6c757d; font-size: 13px; max-width: 100px;">Próximo</button>
+        </div>
+
+        <div id="painelDetalheTurno" style="display: none; margin-top: 30px; padding-top: 20px; border-top: 2px dashed #ccc;">
+            <h3 style="font-size: 16px; color: #17a2b8; text-align: left; margin-bottom: 10px;">📋 Extrato de Lançamentos do Turno Selecionado</h3>
+            
+            <table style="width: 100%; border-collapse: collapse; margin-bottom: 20px; font-size: 14px; text-align: left;">
+            <thead>
+                <tr style="background-color: #e9ecef;">
+                    <th style="padding: 8px; border: 1px solid #dee2e6;">Data Lançamento</th>
+                    <th style="padding: 8px; border: 1px solid #dee2e6;">Hora</th>
+                    <th style="padding: 8px; border: 1px solid #dee2e6;">Fluxo</th>
+                    <th style="padding: 8px; border: 1px solid #dee2e6;">Forma</th>
+                    <th style="padding: 8px; border: 1px solid #dee2e6;">Bandeira</th>
+                    <th style="padding: 8px; border: 1px solid #dee2e6;">Parcelas</th>
+                    <th style="padding: 8px; border: 1px solid #dee2e6;">Descrição / Motivo</th>
+                    <th style="padding: 8px; border: 1px solid #dee2e6; text-align: right;">Valor</th>
+                </tr>
+            </thead>
+            <tbody id="tabelaDetalheTurnoCorpo"></tbody>
+        </table>
+
+        <div style="display: flex; justify-content: center; align-items: center; gap: 15px; margin-top: 15px; margin-bottom: 15px;">
+            <button id="btnDetAnterior" style="margin-top: 0; padding: 5px 15px; background-color: #6c757d; font-size: 13px; max-width: 100px;">Anterior</button>
+            <span id="txtPaginaDet" style="font-size: 14px; font-weight: bold; color: #555;">Página 1</span>
+            <button id="btnDetProximo" style="margin-top: 0; padding: 5px 15px; background-color: #6c757d; font-size: 13px; max-width: 100px;">Próximo</button>
+        </div>
+
+        </div>
+    </div>
+
+    <div id="telaSincronizacao" class="container" style="display: none; max-width: 650px;">
+        <h2>🔄 Sincronização de Tabelas Locais</h2>
+        <p style="text-align: left; font-size: 14px; color: #666;">Audite o volume de transações locais (SQLite) e envie os lotes atrasados para o servidor PostgreSQL central.</p>
+        
+        <button id="btnVoltarSincronizacao" style="background-color: #6c757d; margin-bottom: 15px; width: auto; float: left;">⬅️ Voltar ao Caixa</button>
+        <button id="btnRefreshSincronizacao" style="background-color: #007bff; margin-bottom: 15px; width: auto; float: right;">🔄 Atualizar Contadores</button>
+        <div style="clear: both;"></div>
+
+        <table style="width: 100%; border-collapse: collapse; margin-bottom: 20px; font-size: 14px; text-align: left;">
+            <thead>
+                <tr style="background-color: #e9ecef;">
+                    <th style="padding: 10px; border: 1px solid #dee2e6;">Módulo / Tabela</th>
+                    <th style="padding: 10px; border: 1px solid #dee2e6; text-align: center;">Total Local</th>
+                    <th style="padding: 10px; border: 1px solid #dee2e6; text-align: center; color: #dc3545;">Pendentes</th>
+                    <th style="padding: 10px; border: 1px solid #dee2e6; text-align: center;">Ação</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td style="padding: 10px; border: 1px solid #dee2e6; font-weight: bold;">📝 Lançamentos / Vendas</td>
+                    <td id="txtTotalVendas" style="padding: 10px; border: 1px solid #dee2e6; text-align: center; font-weight: bold;">0</td>
+                    <td id="txtPendentesVendas" style="padding: 10px; border: 1px solid #dee2e6; text-align: center; font-weight: bold; color: #dc3545;">0</td>
+                    <td style="padding: 10px; border: 1px solid #dee2e6; text-align: center;">
+                        <button id="btnSyncVendas" style="margin-top: 0; padding: 6px 12px; font-size: 13px; background-color: #28a745; width: auto;">Sincronizar</button>
+                    </td>
+                </tr>
+                <tr>
+                    <td style="padding: 10px; border: 1px solid #dee2e6; font-weight: bold;">🔑 Turnos de Caixa</td>
+                    <td id="txtTotalTurnos" style="padding: 10px; border: 1px solid #dee2e6; text-align: center; font-weight: bold;">0</td>
+                    <td id="txtPendentesTurnos" style="padding: 10px; border: 1px solid #dee2e6; text-align: center; font-weight: bold; color: #dc3545;">0</td>
+                    <td style="padding: 10px; border: 1px solid #dee2e6; text-align: center;">
+                        <button id="btnSyncTurnos" style="margin-top: 0; padding: 6px 12px; font-size: 13px; background-color: #28a745; width: auto;">Sincronizar</button>
+                    </td>
+                </tr>
+                <tr>
+                    <td style="padding: 10px; border: 1px solid #dee2e6; font-weight: bold;">💳 Recebíveis de Cartão</td>
+                    <td id="txtTotalRecebiveis" style="padding: 10px; border: 1px solid #dee2e6; text-align: center; font-weight: bold;">0</td>
+                    <td id="txtPendentesRecebiveis" style="padding: 10px; border: 1px solid #dee2e6; text-align: center; font-weight: bold; color: #dc3545;">0</td>
+                    <td style="padding: 10px; border: 1px solid #dee2e6; text-align: center;">
+                        <button id="btnSyncRecebiveis" style="margin-top: 0; padding: 6px 12px; font-size: 13px; background-color: #28a745; width: auto;">Sincronizar</button>
+                    </td>
+                </tr>
+            </tbody>
+        </table>
+
+        <h3 style="font-size: 14px; text-align: left; color: #555; margin-bottom: 5px;">🖥️ Console de Eventos em Tempo Real:</h3>
+        <div id="consoleLogSync" style="background-color: #212529; color: #28a745; font-family: monospace; font-size: 12px; padding: 15px; border-radius: 4px; height: 180px; overflow-y: auto; text-align: left; box-sizing: border-box; border: 1px solid #495057;">
+            [SISTEMA] Console aguardando comandos...
+        </div>
+    </div>
+
+    <div id="telaCaixa" class="container">
+        <h1>Movimentação de Caixa</h1>
+        
+        <input type="hidden" id="caixaId" value="">
+        <input type="hidden" id="operadorId" value="">
+
+        <div class="form-group">
+            <label>Operador Logado:</label>
+            <input type="text" id="operadorNome" value="" disabled>
+        </div>
+
+        <div class="form-group">
+            <label for="caixaDescricao">Identificação do Terminal:</label>
+            <input type="text" id="caixaDescricao" value="" disabled>
+        </div>
+
+        <div class="form-group">
+            <label for="origem">Origem do Movimento:</label>
+            <select id="origem">
+                <option value="E">E - Entrada (Venda/Aporte)</option>
+                <option value="S">S - Saída (Sangria/Pagamento)</option>
+            </select>
+        </div>
+
+        <div class="form-group">
+            <label for="formaPagamento">Forma de Pagamento:</label>
+            <select id="formaPagamento">
+                <option value="DN">DN - Dinheiro</option>
+                <option value="CC">CC - Cartão de Crédito</option>
+                <option value="CD">CD - Cartão de Débito</option>
+                <option value="PX">PX - Pix</option>
+            </select>
+        </div>
+
+        <div id="painelCartaoCredito" style="display: none; background-color: #f8f9fa; padding: 10px; border: 1px solid #ced4da; border-radius: 4px; margin-bottom: 15px;">
+            <p style="margin: 0 0 8px 0; font-size: 12px; font-weight: bold; color: #495057;">💳 Detalhes do Cartão de Crédito</p>
+            
+            <div style="display: flex; gap: 10px;">
+                <div style="flex: 1;">
+                    <label for="bandeiraCartao" style="display: block; font-size: 12px; margin-bottom: 4px;">Bandeira:</label>
+                    <select id="bandeiraCartao" style="width: 100%; padding: 6px;">
+                        <option value="Visa">Visa</option>
+                        <option value="Mastercard">Mastercard</option>
+                        <option value="Elo">Elo</option>
+                        <option value="Hipercard">Hipercard</option>
+                        <option value="Amex">American Express</option>
+                    </select>
+                </div>
+                
+                <div style="width: 100px;">
+                    <label for="parcelasCartao" style="display: block; font-size: 12px; margin-bottom: 4px;">Parcelas:</label>
+                    <input type="number" id="parcelasCartao" value="1" min="1" max="12" style="width: 100%; padding: 5px; text-align: center;">
+                </div>
+            </div>
+        </div>
+
+        <div class="form-group">
+            <label for="descricaoMovimento">Descrição do Lançamento:</label>
+            <textarea id="descricaoMovimento" rows="3" style="width: 100%; padding: 12px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; font-size: 16px; font-family: inherit; resize: vertical;" placeholder="Detalhes da movimentação..."></textarea>
+        </div>
+
+        <div class="form-group">
+            <label for="total">Valor Total (R$):</label>
+            <input type="number" id="total" class="campo-total" min="0.01" step="0.01" value="0.00">
+        </div>
+        <button id="btnRegistrar">Lançar no Caixa</button>
+
+        <button id="btnToggleLancamentos" style="background-color: #6c757d; margin-top: 25px; padding: 10px; font-size: 14px; width: auto; display: block; margin-left: auto; margin-right: auto;">📋 Ver Lançamentos do Turno</button>
+
+        <div id="containerLancamentos" style="display: none; margin-top: 15px;">
+            <h3 style="font-size: 16px; text-align: left; margin-bottom: 10px; color: #555;">📝 Lançamentos do Turno Atual</h3>
+            <table style="width: 100%; border-collapse: collapse; font-size: 14px; text-align: left; margin-bottom: 20px;">
+                <thead>
+                    <tr style="background-color: #f1f3f5;">
+                        <th style="padding: 6px; border: 1px solid #dee2e6;">Origem</th>
+                        <th style="padding: 6px; border: 1px solid #dee2e6;">Forma</th>
+                        <th style="padding: 6px; border: 1px solid #dee2e6;">Bandeira</th>
+                        <th style="padding: 6px; border: 1px solid #dee2e6;">Parcelas</th>
+                        <th style="padding: 6px; border: 1px solid #dee2e6;">Descrição</th>
+                        <th style="padding: 6px; border: 1px solid #dee2e6;">Valor</th>
+                        <th style="padding: 6px; border: 1px solid #dee2e6; text-align: center;">Ação</th>
+                    </tr>
+                </thead>
+                <tbody id="tabelaLancamentosCorpo">
+                    </tbody>
+            </table>
+
+            <div style="display: flex; justify-content: center; align-items: center; gap: 15px; margin-top: 15px; margin-bottom: 15px;">
+                <button id="btnLancAnterior" style="margin-top: 0; padding: 5px 15px; background-color: #6c757d; font-size: 13px; max-width: 100px;">Anterior</button>
+                <span id="txtPaginaLanc" style="font-size: 14px; font-weight: bold; color: #555;">Página 1</span>
+                <button id="btnLancProximo" style="margin-top: 0; padding: 5px 15px; background-color: #6c757d; font-size: 13px; max-width: 100px;">Próximo</button>
+            </div>
+        </div>
+
+        <button id="btnChamarFechamento" style="background-color: #ffc107; color: #212529; margin-top: 20px;">Fechar Caixa (Encerrar Turno)</button>
+        
+        <button id="btnVerHistorico" style="background-color: #17a2b8; margin-bottom: 10px;">📊 Histórico de Turnos</button>
+
+        <button id="btnVerSincronizacao" style="background-color: #6f42c1; margin-bottom: 10px; display: none;">🔄 Painel de Sincronização Manual</button>
+
+        <button id="btnSair" class="btn-logout">Trocar de Operador (Sair)</button>
+
+        <div id="statusLog" class="msg-box"></div>
+    </div>
+
+    <div id="modalExclusao" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); align-items: center; justify-content: center; z-index: 9999;">
+        <div class="container login-box" style="margin-top: 0; max-width: 380px; text-align: center;">
+            <h3 id="tituloModalExclusao" style="color: #dc3545; margin-bottom: 10px;">🔒 Autorização de Gerente</h3>
+            <p id="subtituloModalExclusao" style="font-size: 14px; color: #555; margin-bottom: 20px;">Esta ação requer credenciais de um superusuário para ser concluída.</p>
+            
+            <!-- 🌟 NOVO CONTAINER: Permite ocultar os campos de texto no HTML caso o usuário seja admin -->
+            <div id="containerCamposGerente">
+                <div class="form-group" style="text-align: left; margin-bottom: 12px;">
+                    <label for="authGerenteUsuario" style="font-size: 13px;">Usuário Master:</label>
+                    <input type="text" id="authGerenteUsuario" placeholder="Usuário do Administrador" style="padding: 8px; font-size: 14px;">
+                </div>
+                <div class="form-group" style="text-align: left; margin-bottom: 15px;">
+                    <label for="authGerenteSenha" style="font-size: 13px;">Senha Master:</label>
+                    <input type="password" id="authGerenteSenha" placeholder="Senha do Administrador" style="padding: 8px; font-size: 14px;">
+                </div>
+            </div>
+
+            <div id="erroAuthGerente" class="msg-box erro" style="margin-bottom: 15px; font-size: 13px; padding: 8px;"></div>
+
+            <input type="hidden" id="idLancamentoParaExcluir">
+
+            <div style="display: flex; gap: 15px;">
+                <button id="btnConfirmarDeletar" style="background-color: #dc3545; flex: 1; margin-top: 0; padding: 12px; font-size: 15px;">Autorizar e Excluir</button>
+                <button id="btnCancelarDeletar" style="background-color: #6c757d; flex: 1; margin-top: 0; padding: 12px; font-size: 15px;">Cancelar</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const { ipcRenderer } = require('electron');
+
+        // Variáveis de paginação para os lançamentos do dia (Tela Principal)
+        let dadosLancamentosCompletos = [];
+        let paginaAtualLanc = 1;
+        const itensPorPaginaLanc = 50;
+
+        // Variáveis de paginação globais do sistema
+        let dadosHistoricoCompletos = [];
+        let paginaAtualHist = 1;
+        const itensPorPaginaHist = 10;
+
+        let dadosDetalheCompletos = [];
+        let paginaAtualDet = 1;
+        const itensPorPaginaDet = 50;
+        
+        // 1. Inicialização, Identificação da Máquina e Login Automático Blindado
+        window.addEventListener('DOMContentLoaded', async () => {
+            try {
+                const caixaIdDaMaquina = await ipcRenderer.invoke('obter-id-maquina');
+                
+                // CONFIGURAÇÃO INTERATIVA: Terminal Não Configurado
+                if (!caixaIdDaMaquina) {
+                    const divErroLogin = document.getElementById('erroLogin');
+                    if (divErroLogin) {
+                        divErroLogin.innerHTML = `
+                            <div style="text-align: left; font-size: 14px; line-height: 1.5;">
+                                <span style="font-size: 16px;">🖥️ <strong>Terminal Não Configurado!</strong></span><br><br>
+                                Insira o ID deste caixa abaixo para registrar este computador.<br><br>
+                                <div style="display: flex; gap: 8px; margin-bottom: 12px;">
+                                    <input type="text" id="inputManualCaixaId" placeholder="Cole o UUID do Caixa aqui" style="padding: 8px; font-size: 14px; flex: 1; border-radius: 4px; border: 1px solid #ccc; color: #333;">
+                                    <button id="btnSalvarCaixaManual" style="margin-top: 0; width: auto; padding: 8px 15px; font-size: 14px; background-color: #28a745;">Gravar</button>
+                                </div>
+                            </div>
+                        `;
+                        divErroLogin.style.display = 'block';
+                        document.getElementById('btnSalvarCaixaManual').addEventListener('click', executarGravacaoManualCaixa);
+                    }
+                    
+                    const btnLogar = document.getElementById('btnLogar');
+                    if (btnLogar) btnLogar.style.display = 'none';
+                    return;
+                }
+
+                // 🌟 VALIDAÇÃO: Testa se o banco de dados conseguiu conectar em modo ONLINE
+                const statusRedeBanco = await ipcRenderer.invoke('verificar-status-rede-banco');
+                if (!statusRedeBanco.isOnline) {
+                    const divErroLogin = document.getElementById('erroLogin');
+                    if (divErroLogin) {
+                        divErroLogin.innerHTML = `
+                            <div style="text-align: left; font-size: 14px; line-height: 1.4;">
+                                <span style="font-size: 15px; color: #721c24;">🛑 <strong>Parâmetros do PostgreSQL Inválidos ou Ausentes!</strong></span><br>
+                                <span style="font-size: 12px; color: #666;">Configuração de conexão central exigida para sincronização.</span><br><br>
+                                
+                                <div class="form-group" style="margin-bottom: 8px;">
+                                    <label style="font-size: 12px; margin-bottom: 2px;">Servidor IP (Host):</label>
+                                    <input type="text" id="cfgHost" value="localhost" style="padding: 6px; font-size: 14px;">
+                                </div>
+                                <div style="display: flex; gap: 10px; margin-bottom: 8px;">
+                                    <div style="flex: 2;">
+                                        <label style="font-size: 12px; margin-bottom: 2px;">Nome do Banco:</label>
+                                        <input type="text" id="cfgDatabase" value="sysloja" style="padding: 6px; font-size: 14px;">
+                                    </div>
+                                    <div style="flex: 1;">
+                                        <label style="font-size: 12px; margin-bottom: 2px;">Porta:</label>
+                                        <input type="number" id="cfgPort" value="5432" style="padding: 6px; font-size: 14px;">
+                                    </div>
+                                </div>
+                                <div class="form-group" style="margin-bottom: 8px;">
+                                    <label style="font-size: 12px; margin-bottom: 2px;">Usuário:</label>
+                                    <input type="text" id="cfgUser" value="admloja" style="padding: 6px; font-size: 14px;">
+                                </div>
+                                <div class="form-group" style="margin-bottom: 12px;">
+                                    <label style="font-size: 12px; margin-bottom: 2px;">Senha do Banco:</label>
+                                    <input type="password" id="cfgPassword" placeholder="Digite a senha" style="padding: 6px; font-size: 14px;">
+                                </div>
+                                
+                                <button id="btnSalvarPostgresManual" style="margin-top: 0; padding: 12px; font-size: 15px; background-color: #6f42c1;">Gravar Parâmetros e Conectar</button>
+                            </div>
+                        `;
+                        divErroLogin.style.display = 'block';
+                        document.getElementById('btnSalvarPostgresManual').addEventListener('click', executarGravacaoManualPostgres);
+                    }
+                    
+                    const btnLogar = document.getElementById('btnLogar');
+                    if (btnLogar) btnLogar.style.display = 'none';
+                    return;
+                }
+
+                // Se o banco estiver online e o caixa configurado, prossegue com o fluxo normal
+                const resposta = await ipcRenderer.invoke('carregar-caixa', caixaIdDaMaquina);
+                
+                if (resposta.status === 'sucesso') {
+                    document.getElementById('caixaId').value = resposta.dados.id;
+                    document.getElementById('caixaDescricao').value = resposta.dados.descricao;
+                    
+                    // CONFIGURAÇÃO DE LOGIN AUTOMÁTICO
+                    const loginAuto = await ipcRenderer.invoke('obter-lembrete-login');
+                    if (loginAuto.status === 'sucesso') {
+                        document.getElementById('loginUsuario').value = loginAuto.usuario;
+                        document.getElementById('lembrarSenha').checked = true;
+                        
+                        const respostaAuto = await ipcRenderer.invoke('tentar-login', { 
+                            usuario: loginAuto.usuario, 
+                            senha: loginAuto.senhaHash, 
+                            caixaId: resposta.dados.id 
+                        });
+
+                        if (respostaAuto.status === 'sucesso') {
+                            window.operadorLogado = respostaAuto.operador;
+                            document.getElementById('operadorId').value = respostaAuto.operador.id;
+                            // 🌟 CORREÇÃO REALIZADA AQUI: Removido o erro de sintaxe 'whitespaces'
+                            document.getElementById('operadorNome').value = respostaAuto.operador.nome;
+                            
+                            const ehAdmin = respostaAuto.operador.role === 'admin' || respostaAuto.operador.usuario === 'admin';
+                            const botaoHistoricoClassico = document.getElementById('btnVerHistorico');
+                            if (botaoHistoricoClassico) {
+                                botaoHistoricoClassico.style.display = ehAdmin ? 'block' : 'none';
+                            }
+
+                            const botaoSyncMenu = document.getElementById('btnVerSincronizacao');
+                            if (botaoSyncMenu) botaoSyncMenu.style.display = ehAdmin ? 'block' : 'none';
+
+                            const caixaEstaAberto = await ipcRenderer.invoke('verificar-caixa-aberto', resposta.dados.id);
+                            document.getElementById('telaLogin').style.display = 'none';
+
+                            if (caixaEstaAberto) {
+                                document.getElementById('telaCaixa').style.display = 'block';
+                                await atualizarTabelaLancamentosJanela();
+                                document.getElementById('origem').focus();
+                            } else {
+                                document.getElementById('telaAbertura').style.display = 'block';
+                                document.getElementById('valorAbertura').focus();
+                                document.getElementById('valorAbertura').select();
+                            }
+                        } else {
+                            document.getElementById('loginUsuario').value = '';
+                            document.getElementById('lembrarSenha').checked = false;
+                            document.getElementById('loginUsuario').focus();
+                        }
+                    }
+                } else {
+                    // Se o caixaId do arquivo estiver errado/inválido
+                    const divErroLogin = document.getElementById('erroLogin');
+                    if (divErroLogin) {
+                        divErroLogin.innerHTML = `
+                            <div style="text-align: left; font-size: 14px; line-height: 1.5;">
+                                <span style="font-size: 16px;">❌ <strong>Identificação de Caixa Inválida!</strong></span><br><br>
+                                O ID atual não foi encontrado na base ou está bloqueado.<br>
+                                <strong>Retorno:</strong> ${resposta.mensagem}<br><br>
+                                Insira um novo ID válido abaixo para reconfigurar:<br><br>
+                                <div style="display: flex; gap: 8px; margin-bottom: 12px;">
+                                    <input type="text" id="inputManualCaixaId" placeholder="Cole o novo UUID do Caixa aqui" style="padding: 8px; font-size: 14px; flex: 1; border-radius: 4px; border: 1px solid #ccc; color: #333;">
+                                    <button id="btnSalvarCaixaManual" style="margin-top: 0; width: auto; padding: 8px 15px; font-size: 14px; background-color: #28a745;">Gravar</button>
+                                </div>
+                            </div>
+                        `;
+                        divErroLogin.style.display = 'block';
+                        document.getElementById('btnSalvarCaixaManual').addEventListener('click', executarGravacaoManualCaixa);
+                    }
+                    
+                    const btnLogar = document.getElementById('btnLogar');
+                    if (btnLogar) btnLogar.style.display = 'none';
+                }
+            } catch (err) {
+                console.error(`🚫 Erro ao identificar a máquina: ${err.message}`);
+                ipcRenderer.send('fechar-aplicativo');
+            }
+        });
+
+        // 🌟 NOVO: Função que processa e grava os parâmetros relacionais do Postgres com timer de 10s
+        async function executarGravacaoManualPostgres() {
+            const dadosBanco = {
+                host: document.getElementById('cfgHost').value,
+                database: document.getElementById('cfgDatabase').value,
+                port: document.getElementById('cfgPort').value,
+                user: document.getElementById('cfgUser').value,
+                password: document.getElementById('cfgPassword').value
+            };
+
+            if (!dadosBanco.host || !dadosBanco.database || !dadosBanco.user) {
+                alert("⚠️ Preencha todos os parâmetros estruturais obrigatórios do banco!");
+                return;
+            }
+
+            const resultado = await ipcRenderer.invoke('atualizar-banco-config', dadosBanco);
+
+            if (resultado.status === 'sucesso') {
+                let segundosRestantes = 5;
+                const divErroLogin = document.getElementById('erroLogin');
+                
+                divErroLogin.className = "msg-box online";
+                divErroLogin.style.textAlign = "center";
+                divErroLogin.style.padding = "25px";
+                
+                const intervaloTimer = setInterval(() => {
+                    divErroLogin.innerHTML = `
+                        <div style="font-size: 15px; line-height: 1.6;">
+                            🏦 <strong>Parâmetros de Conexão Atualizados!</strong><br><br>
+                            As chaves de banco foram injetadas com sucesso no arquivo local.<br>
+                            O sistema será encerrado em <strong>${segundosRestantes} segundos</strong> para inicializar os drivers de rede.<br><br>
+                            <span style="color: #155724; font-weight: bold;">Por favor, abra o PDV novamente para efetuar o login.</span>
+                        </div>
+                    `;
+                    
+                    segundosRestantes--;
+                    
+                    if (segundosRestantes < 0) {
+                        clearInterval(intervaloTimer);
+                        ipcRenderer.send('fechar-aplicativo');
+                    }
+                }, 1000);
+            } else {
+                alert(`❌ Falha ao gravar parâmetros no config.json: ${resultado.message}`);
+            }
+        }
+
+        // 🌟 NOVO: Função que processa o salvamento do input e executa a contagem regressiva
+        async function executarGravacaoManualCaixa() {
+            const inputId = document.getElementById('inputManualCaixaId');
+            const novoId = inputId ? inputId.value.trim() : "";
+            const divErroLogin = document.getElementById('erroLogin');
+
+            if (!novoId) {
+                alert("⚠️ Por favor, digite ou cole um ID de Caixa válido!");
+                if (inputId) inputId.focus();
+                return;
+            }
+
+            // Invoca o canal do processo principal para gravar no arquivo texto
+            const resultado = await ipcRenderer.invoke('atualizar-caixa-id-config', novoId);
+
+            if (resultado.status === 'sucesso') {
+                let segundosRestantes = 5;
+                
+                // Transforma o card de erro em um card de sucesso com o timer dinâmico
+                divErroLogin.className = "msg-box online";
+                divErroLogin.style.textAlign = "center";
+                divErroLogin.style.padding = "20px";
+                
+                const intervaloTimer = setInterval(() => {
+                    divErroLogin.innerHTML = `
+                        <div style="font-size: 15px; line-height: 1.6;">
+                            💾 <strong>Configuração salva com sucesso!</strong><br><br>
+                            O terminal foi vinculado ao ID informado.<br>
+                            O sistema será encerrado em <strong>${segundosRestantes} segundos</strong> para aplicar as alterações.<br><br>
+                            <span style="color: #155724; font-weight: bold;">Abra o sistema novamente para realizar o login.</span>
+                        </div>
+                    `;
+                    
+                    segundosRestantes--;
+                    
+                    if (segundosRestantes < 0) {
+                        clearInterval(intervaloTimer);
+                        // Encerra o processo principal de forma limpa
+                        ipcRenderer.send('fechar-aplicativo');
+                    }
+                }, 1000);
+            } else {
+                alert(`❌ Falha ao gravar arquivo: ${resultado.mensagem}`);
+            }
+        }
+
+        // 2. Ação de Login + Verificação de Estado do Caixa (CORRIGIDO)
+        document.getElementById('btnLogar').addEventListener('click', async () => {
+            document.getElementById('sucessoLogin').style.display = 'none';
+            const campoUsuario = document.getElementById('loginUsuario');
+            const campoSenha = document.getElementById('loginSenha');
+            const divErroLogin = document.getElementById('erroLogin');
+            
+            const usuario = campoUsuario.value.trim();
+            const senha = campoSenha.value;
+
+            // 🛠️ CORREÇÃO: Captura o caixaId que o sistema buscou automaticamente na inicialização da máquina
+            const caixaId = document.getElementById('caixaId').value;
+
+            divErroLogin.style.display = 'none';
+
+            if(!usuario || !senha) {
+                divErroLogin.innerText = "⚠️ Preencha o usuário e a senha!";
+                divErroLogin.style.display = 'block';
+                campoUsuario.focus();
+                return;
+            }
+
+            try {
+                // Modificado para passar um parâmetro indicando que não precisa re-criptografar se já vier automatizado
+                const resposta = await ipcRenderer.invoke('tentar-login', { usuario, senha, caixaId });
+
+                if (resposta.status === 'sucesso') {
+                    window.operadorLogado = resposta.operador; //
+
+                    document.getElementById('operadorId').value = resposta.operador.id; //
+                    document.getElementById('operadorNome').value = resposta.operador.nome; //
+                    
+                    // =====================================================================
+                    // 🛡️ REGRAS VISUAIS DE ADMIN (SEM MENU LATERAL): Oculta o botão se não for Administrador
+                    // =====================================================================
+                    const ehAdmin = resposta.operador.role === 'admin' || resposta.operador.usuario === 'admin';
+                    const botaoHistoricoClassico = document.getElementById('btnVerHistorico');
+                    
+                    if (botaoHistoricoClassico) {
+                        botaoHistoricoClassico.style.display = ehAdmin ? 'block' : 'none';
+                    }
+                    // =====================================================================
+
+                    const botaoSyncMenu = document.getElementById('btnVerSincronizacao');
+                    if (botaoSyncMenu) botaoSyncMenu.style.display = ehAdmin ? 'block' : 'none';
+
+                    const manterConectado = document.getElementById('lembrarSenha').checked; //
+                    await ipcRenderer.invoke('salvar-lembrete-login', { 
+                        usuario, 
+                        senha, 
+                        ativo: manterConectado 
+                    }); //
+
+                    campoUsuario.value = ''; //
+                    campoSenha.value = ''; //
+
+                    const caixaEstaAberto = await ipcRenderer.invoke('verificar-caixa-aberto', caixaId); //
+                    document.getElementById('telaLogin').style.display = 'none'; //
+
+                    if (caixaEstaAberto) { //
+                        document.getElementById('telaCaixa').style.display = 'block'; //
+                        await atualizarTabelaLancamentosJanela(); //
+                        document.getElementById('origem').focus(); //
+                    } else {
+                        document.getElementById('telaAbertura').style.display = 'block'; //
+                        document.getElementById('valorAbertura').focus(); //
+                        document.getElementById('valorAbertura').select(); //
+                    }
+                } else {
+                    divErroLogin.innerText = `❌ ${resposta.mensagem}`;
+                    divErroLogin.style.display = 'block';
+                    campoSenha.value = '';
+                    campoUsuario.focus();
+                }
+            } catch (err) {
+                console.error(err);
+                divErroLogin.innerText = "❌ Erro ao processar o login.";
+                divErroLogin.style.display = 'block';
+            }
+        });
+
+        // 2.1 Ação de Confirmar Abertura de Caixa (BLOCO COMPLETO)
+        document.getElementById('btnConfirmarAbertura').addEventListener('click', async () => {
+            const caixaId = document.getElementById('caixaId').value;
+            const operadorId = document.getElementById('operadorId').value;
+            const valorAbertura = parseFloat(document.getElementById('valorAbertura').value) || 0.00;
+            const divErroLogin = document.getElementById('erroLogin'); // Reaproveita para exibir o erro na caixa de abertura
+
+            divErroLogin.style.display = 'none';
+            divErroLogin.innerText = '';
+
+            if (valorAbertura < 0) {
+                divErroLogin.innerText = "❌ O valor de abertura não pode ser negativo!";
+                divErroLogin.style.display = 'block';
+                
+                // Limpa o aviso após 5 segundos
+                setTimeout(() => {
+                    divErroLogin.style.display = 'none';
+                    divErroLogin.innerText = '';
+                }, 5000);
+                return;
+            }
+
+            try {
+                const resultado = await ipcRenderer.invoke('abrir-caixa', { caixaId, operadorId, valorAbertura });
+                
+                if (resultado.status === 'sucesso') {
+                    // Esconde a tela de abertura e libera a tela principal de movimentações
+                    document.getElementById('telaAbertura').style.display = 'none';
+                    document.getElementById('telaCaixa').style.display = 'block';
+                    
+                    // Atualiza a tabela (que começará vazia por ser um novo turno)
+                    await atualizarTabelaLancamentosJanela();
+                    
+                    document.getElementById('origem').focus();
+                } else {
+                    divErroLogin.innerText = `❌ Erro ao abrir o caixa: ${resultado.mensagem}`;
+                    divErroLogin.style.display = 'block';
+
+                    setTimeout(() => {
+                        divErroLogin.style.display = 'none';
+                        divErroLogin.innerText = '';
+                    }, 5000);
+                }
+            } catch (err) {
+                divErroLogin.innerText = `❌ Erro interno na abertura: ${err.message}`;
+                divErroLogin.style.display = 'block';
+
+                setTimeout(() => {
+                    divErroLogin.style.display = 'none';
+                    divErroLogin.innerText = '';
+                }, 5000);
+            }
+        });
+        
+        // Monitora a mudança na forma de pagamento para exibir as opções de cartão
+        document.getElementById('formaPagamento').addEventListener('change', (event) => {
+            const painelCartao = document.getElementById('painelCartaoCredito');
+            
+            if (event.target.value === 'CC') {
+                painelCartao.style.display = 'block';
+                document.getElementById('parcelasCartao').value = '1'; // reseta para 1 parcela por padrão
+            } else {
+                painelCartao.style.display = 'none';
+            }
+        });
+
+        // 3. Registrar Lançamento de Venda
+        document.getElementById('btnRegistrar').addEventListener('click', async () => {
+            const statusDiv = document.getElementById('statusLog');
+            
+            // Captura dos campos da tela
+            const caixaId = document.getElementById('caixaId').value;
+            const operadorId = document.getElementById('operadorId').value;
+            const total = parseFloat(document.getElementById('total').value);
+            const formaPagamento = document.getElementById('formaPagamento').value;
+            const origem = document.getElementById('origem').value;
+            const descricaoMovimento = document.getElementById('descricaoMovimento').value.trim();
+
+            let bandeira = null;
+            let parcelas = 1;
+
+            // 🔍 Validação silenciosa via Log
+            if (!caixaId || !operadorId) {
+                statusDiv.style.display = 'block';
+                statusDiv.className = 'msg-box erro';
+                statusDiv.innerText = '❌ Erro interno: ID do Caixa ou ID do Operador não foram carregados na sessão!';
+                return;
+            }
+
+            // Se for Crédito, pega os valores selecionados no novo painel
+            if (formaPagamento === 'CC') {
+                bandeira = document.getElementById('bandeiraCartao').value;
+                parcelas = parseInt(document.getElementById('parcelasCartao').value) || 1;
+                
+                if (parcelas < 1) {
+                    statusDiv.style.display = 'block';
+                    statusDiv.className = 'msg-box erro';
+                    statusDiv.innerText = '❌ Erro: O número de parcelas deve ser pelo menos 1!';
+                    return;
+                }
+            }
+
+            if (isNaN(total) || total <= 0) {
+                statusDiv.style.display = 'block';
+                statusDiv.className = 'msg-box erro';
+                statusDiv.innerText = '❌ Erro: O valor deve ser maior que zero!';
+                return;
+            }
+
+            statusDiv.style.display = 'block';
+            statusDiv.className = 'msg-box';
+            statusDiv.innerText = "Processando lançamento...";
+
+            const resposta = await ipcRenderer.invoke('efetuar-venda', {
+                caixaId, 
+                operadorId, 
+                total, 
+                formaPagamento, 
+                origem: origem, 
+                descricaoMovimento,
+                bandeira,
+                parcelas
+            });
+
+            if (resposta.status === 'sucesso') {
+                statusDiv.innerText = `✅ Movimento salvo!\nModo: ${resposta.modo}`;
+                statusDiv.className = resposta.modo.includes('ONLINE') ? 'msg-box online' : 'msg-box offline';
+                
+                document.getElementById('total').value = "0.00";
+                document.getElementById('descricaoMovimento').value = "";
+                document.getElementById('painelCartaoCredito').style.display = 'none'; 
+                document.getElementById('formaPagamento').value = "DN"; 
+                
+                await atualizarTabelaLancamentosJanela();
+                document.getElementById('origem').focus();
+
+                setTimeout(() => {
+                    statusDiv.style.display = 'none';
+                    statusDiv.innerText = '';
+                }, 3000);
+
+            } else {
+                statusDiv.innerText = `❌ Erro: ${resposta.mensagem}`;
+                statusDiv.className = 'msg-box erro';
+            }
+        });
+
+        // 4. Botão de Logout
+        //document.getElementById('btnSair').addEventListener('click', () => {
+        document.getElementById('btnSair').addEventListener('click', async () => {
+            // Apaga as credenciais salvas do arquivo para que o próximo precise digitar
+            await ipcRenderer.invoke('salvar-lembrete-login', { usuario: '', senhaHash: '', ativo: false });
+            document.getElementById('lembrarSenha').checked = false;
+            document.getElementById('erroLogin').style.display = 'none';
+            document.getElementById('statusLog').style.display = 'none';
+            document.getElementById('descricaoMovimento').value = '';
+            document.getElementById('total').value = '0.00';
+            document.getElementById('operadorId').value = '';
+            document.getElementById('operadorNome').value = '';
+            
+            document.getElementById('telaCaixa').style.display = 'none';
+            document.getElementById('telaAbertura').style.display = 'none'; // Garante que limpa a abertura se estivesse nela
+            document.getElementById('telaLogin').style.display = 'block';
+            
+            setTimeout(() => { document.getElementById('loginUsuario').focus(); }, 50);
+        });
+
+        //Fechamento de Caixa
+        // 1. Chamar a Tela de Fechamento (Com detalhamento por forma/origem) (Separando Dinheiro e Eletrônico) (Com coluna de Saldo Líquido e Cores Ajustadas)
+        document.getElementById('btnChamarFechamento').addEventListener('click', async () => {
+            const caixaId = document.getElementById('caixaId').value;
+            const statusDiv = document.getElementById('statusLog');
+            
+            const resumo = await ipcRenderer.invoke('obter-resumo-turno', caixaId);
+            
+            if (resumo.status === 'erro') {
+                statusDiv.style.display = 'block';
+                statusDiv.className = 'msg-box erro';
+                statusDiv.innerText = `⚠️ ${resumo.mensagem}`;
+
+                setTimeout(() => {
+                    statusDiv.style.display = 'none';
+                    statusDiv.innerText = '';
+                }, 5000);
+                return;
+            }
+
+            // Separa os cálculos de Dinheiro e Eletrônico para os cards superiores
+            const fundoInicial = resumo.fundoInicial;
+            let dinheiroEntradas = 0;
+            let dinheiroSaidas = 0;
+            let totalEletronico = 0;
+
+            resumo.detalheFormas.forEach(f => {
+                if (f.nome === 'Dinheiro') {
+                    dinheiroEntradas = f.entradas;
+                    dinheiroSaidas = f.saidas;
+                } else {
+                    totalEletronico += f.entradas;
+                }
+            });
+
+            const dinheiroEsperado = fundoInicial + dinheiroEntradas - dinheiroSaidas;
+
+            // Preenche os dados gerais nos cards superiores
+            document.getElementById('fechamentoMovimentoId').value = resumo.movimentoId;
+            document.getElementById('saldoBrutoOculto').value = resumo.saldoFinal; 
+            document.getElementById('resumoFundo').innerText = `R$ ${fundoInicial.toFixed(2)}`;
+            document.getElementById('resumoDinheiroEsperado').innerText = `R$ ${dinheiroEsperado.toFixed(2)}`;
+            document.getElementById('resumoEletronicoEsperado').innerText = `R$ ${totalEletronico.toFixed(2)}`;
+
+            // Reseta o input de conferência física do operador
+            document.getElementById('valorContadoGaveta').value = "0.00";
+            const divResultado = document.getElementById('resultadoConferencia');
+            divResultado.style.display = 'none';
+
+            // Limpa e reconstrói as linhas da tabela de detalhamento
+            const corpoTabela = document.getElementById('tabelaDetalheCorpo');
+            corpoTabela.innerHTML = '';
+
+            resumo.detalheFormas.forEach(forma => {
+                // Só adiciona na tabela se houve alguma movimentação nela
+                if (forma.entradas > 0 || forma.saidas > 0) {
+                    const saldoLiquido = forma.entradas - forma.saidas;
+                    
+                    // 🌟 REGRA VISUAL: O vermelho só ativa se HOUVER saída real (> 0). Se for 0, fica cinza neutro.
+                    const estiloSaida = forma.saidas > 0 
+                        ? 'color: red; font-weight: bold;' 
+                        : 'color: #888; font-weight: normal;';
+                    
+                    const linha = document.createElement('tr');
+                    linha.innerHTML = `
+                        <td style="padding: 8px; border: 1px solid #dee2e6; font-weight: bold;">${forma.nome}</td>
+                        <td style="padding: 8px; border: 1px solid #dee2e6; color: green; font-weight: bold;">R$ ${forma.entradas.toFixed(2)}</td>
+                        <td style="padding: 8px; border: 1px solid #dee2e6; ${estiloSaida}">R$ ${forma.saidas.toFixed(2)}</td>
+                        <td style="padding: 8px; border: 1px solid #dee2e6; font-weight: bold; background-color: #f8f9fa; color: #2b2b2b;">R$ ${saldoLiquido.toFixed(2)}</td>
+                    `;
+                    corpoTabela.appendChild(linha);
+                }
+            });
+
+            // Se nenhuma movimentação foi feita no turno inteiro
+            if (corpoTabela.innerHTML === '') {
+                corpoTabela.innerHTML = `<tr><td colspan="4" style="padding: 10px; text-align: center; color: #888;">Nenhuma movimentação neste turno.</td></tr>`;
+            }
+
+            // Alterna a tela para o gerenciador de fechamento
+            document.getElementById('telaCaixa').style.display = 'none';
+            document.getElementById('telaFechamento').style.display = 'block';
+        });
+
+        // 🌟 NOVO: Listener para calcular quebra/sobra conforme o operador digita
+        document.getElementById('valorContadoGaveta').addEventListener('input', () => {
+            const esperado = parseFloat(document.getElementById('resumoDinheiroEsperado').innerText.replace('R$ ', ''));
+            const contado = parseFloat(document.getElementById('valorContadoGaveta').value) || 0.00;
+            const divResultado = document.getElementById('resultadoConferencia');
+            
+            const diferenca = contado - esperado;
+            divResultado.style.display = 'block';
+
+            if (diferenca === 0) {
+                divResultado.style.color = 'green';
+                divResultado.innerText = '✅ Perfeito! O dinheiro da gaveta bateu com o sistema.';
+            } else if (diferenca > 0) {
+                divResultado.style.color = '#0056b3';
+                divResultado.innerText = `💵 Sobra de Caixa: Está SOBRANDO R$ ${diferenca.toFixed(2)} na gaveta.`;
+            } else {
+                divResultado.style.color = '#dc3545';
+                divResultado.innerText = `⚠️ Quebra de Caixa: Está FALTANDO R$ ${Math.abs(diferenca).toFixed(2)} na gaveta.`;
+            }
+        });
+        
+        // 2. Confirmar Fechamento Definitivo (Enviando os dados de auditoria) (Validação de campo zerado/negativo inclusa)
+        document.getElementById('btnConfirmarFechamento').addEventListener('click', async () => {
+            const movimentoId = document.getElementById('fechamentoMovimentoId').value;
+            const operadorId = document.getElementById('operadorId').value;
+            const statusDiv = document.getElementById('statusLog'); // Usa para exibir mensagens de erro temporárias
+            
+            const valorFechamento = parseFloat(document.getElementById('saldoBrutoOculto').value); 
+            
+            // 🚨 CAPTURA O VALOR QUE O OPERADOR CONTOU:
+            const valorContadoRaw = document.getElementById('valorContadoGaveta').value;
+            const valorContado = parseFloat(valorContadoRaw);
+            
+            // =====================================================================
+            // 🔒 NOVA TRAVA DE SEGURANÇA: Obrigatoriedade do valor contado
+            // =====================================================================
+            if (valorContadoRaw === "" || isNaN(valorContado) || valorContado <= 0) {
+                // 🛠️ APONTA PARA A NOVA DIV INTERNA DA TELA DE FECHAMENTO
+                const divErroFechamento = document.getElementById('erroFechamento');
+                
+                // Força o foco no campo para o operador digitar
+                document.getElementById('valorContadoGaveta').focus();
+                document.getElementById('valorContadoGaveta').select();
+
+                // Exibe o erro de forma visual e imediata
+                divErroFechamento.innerText = "⚠️ Preenchimento Obrigatório: Informe o valor total em dinheiro contado na gaveta (deve ser maior que zero)!";
+                divErroFechamento.style.display = 'block';
+                
+                // Remove o aviso da tela após 5 segundos
+                setTimeout(() => {
+                    divErroFechamento.style.display = 'none';
+                    divErroFechamento.innerText = '';
+                }, 5000);
+                return; // Bloqueia o envio para o banco de dados
+            }
+
+            // Se o valor for válido, prossegue calculando a quebra/sobra normalmente
+            const esperadoDinheiro = parseFloat(document.getElementById('resumoDinheiroEsperado').innerText.replace('R$ ', ''));
+            const diferenca = valorContado - esperadoDinheiro; 
+
+            try {
+                const resultado = await ipcRenderer.invoke('fechar-caixa-turno', { 
+                    movimentoId, 
+                    operadorId, 
+                    valorFechamento, 
+                    valorContado, 
+                    diferenca 
+                });
+
+                if (resultado.status === 'sucesso') {
+                    const divSucesso = document.getElementById('sucessoLogin');
+                    divSucesso.innerText = "🔒 Caixa encerrado com sucesso! Turno finalizado.";
+                    divSucesso.style.display = 'block';
+
+                    document.getElementById('telaFechamento').style.display = 'none';
+                    document.getElementById('btnSair').click(); 
+                    
+                    setTimeout(() => { divSucesso.style.display = 'none'; }, 5000);
+                }
+            } catch (err) {
+                console.error("Erro crítico no fechamento de caixa:", err);
+            }
+        });
+
+        // 3. Cancelar Fechamento (Voltar para as vendas)
+        document.getElementById('btnCancelarFechamento').addEventListener('click', () => {
+            document.getElementById('telaFechamento').style.display = 'none';
+            document.getElementById('telaCaixa').style.display = 'block';
+            document.getElementById('origem').focus();
+        });
+
+        // Função para atualizar a lista de lançamentos que aparecem na tela do caixa
+        // 🔄 FUNÇÃO ATUALIZADA: Baixa todas as movimentações do turno do banco local
+        // Função para atualizar a lista de lançamentos que aparecem na tela do caixa
+        // 🔄 FUNÇÃO CORRIGIDA: Usa o canal 'listar-vendas-turno' correto e repassa o caixaId
+        async function atualizarTabelaLancamentosJanela() {
+            try {
+                const caixaId = document.getElementById('caixaId').value;
+                
+                // 🌟 CORREÇÃO: Invoca o canal exato mapeado no seu main.js enviando o caixaId
+                dadosLancamentosCompletos = await ipcRenderer.invoke('listar-vendas-turno', caixaId);
+                
+                // Se o retorno não for um array por segurança, força ser um array vazio
+                if (!Array.isArray(dadosLancamentosCompletos)) {
+                    dadosLancamentosCompletos = [];
+                }
+                
+                // Sempre que atualiza do zero (nova venda/abertura), volta para a página 1
+                paginaAtualLanc = 1; 
+                renderizarTabelaLancamentosPrincipal();
+                
+            } catch (err) {
+                console.error("Erro ao buscar lançamentos do dia:", err);
+            }
+        }
+
+        // 🎨 FUNÇÃO RESPONSÁVEL POR FATIAR E DESENHAR OS 50 LANÇAMENTOS DO DIA
+        // 🎨 FUNÇÃO RESPONSÁVEL POR FATIAR E DESENHAR OS 50 LANÇAMENTOS COM BOTÃO DE EXCLUSÃO RETORNADO
+        function renderizarTabelaLancamentosPrincipal() {
+            const corpoTabela = document.getElementById('tabelaLancamentosCorpo');
+            if (!corpoTabela) return;
+
+            corpoTabela.innerHTML = '';
+
+            if (!dadosLancamentosCompletos || dadosLancamentosCompletos.length === 0) {
+                // Atualizado o colspan para 7 colunas por conta das novas adições
+                corpoTabela.innerHTML = `<tr><td colspan="7" style="padding: 15px; text-align: center; color: #888; font-style: italic;">Nenhum lançamento registrado neste turno.</td></tr>`;
+                document.getElementById('txtPaginaLanc').innerText = "Página 1 de 1";
+                return;
+            }
+
+            const totalPaginas = Math.ceil(dadosLancamentosCompletos.length / itensPorPaginaLanc);
+            if (paginaAtualLanc > totalPaginas) paginaAtualLanc = totalPaginas;
+            if (paginaAtualLanc < 1) paginaAtualLanc = 1;
+
+            const inicio = (paginaAtualLanc - 1) * itensPorPaginaLanc;
+            const fim = inicio + itensPorPaginaLanc;
+            const itensPagina = dadosLancamentosCompletos.slice(inicio, fim);
+
+            document.getElementById('txtPaginaLanc').innerText = `Página ${paginaAtualLanc} de ${totalPaginas}`;
+
+            itensPagina.forEach(v => {
+                const hora = new Date(v.data_venda || v.data_movimento).toLocaleTimeString('pt-BR');
+                const tipo = (v.origem === 'E' || v.tipo_movimento === 'E') 
+                    ? '<span style="color:green;font-weight:bold;">📥 Entrada</span>' 
+                    : '<span style="color:red;font-weight:bold;">📤 Saída</span>';
+                
+                const formasNome = { DN: 'Dinheiro', CC: 'C. Crédito', CD: 'C. Débito', PX: 'Pix' };
+                const formaTexto = formasNome[v.forma_pagamento] || v.forma_pagamento || 'Dinheiro';
+                
+                const estiloValor = (v.origem === 'E' || v.tipo_movimento === 'E') 
+                    ? 'color: green; font-weight: bold;' 
+                    : 'color: red; font-weight: bold;';
+
+                // 🌟 REGRA DO CARTÃO DE CRÉDITO: Se não for CC, desativa e deixa cinza suave
+                let bandeiraTexto = '—';
+                let parcelaTexto = '—';
+                let estiloColunaCartao = 'color: #888; font-style: italic; background-color: #fdfdfd;'; 
+
+                if (v.forma_pagamento === 'CC') {
+                    bandeiraTexto = v.bandeira || 'Não Inf.';
+                    parcelaTexto = v.parcelas ? `${v.parcelas}x` : '1x';
+                    estiloColunaCartao = 'color: #2b2b2b; font-weight: bold; font-style: normal;'; 
+                }
+
+                const linha = document.createElement('tr');
+                linha.innerHTML = `
+                    <td style="padding: 8px; border: 1px solid #dee2e6;">${tipo}</td>
+                    <td style="padding: 8px; border: 1px solid #dee2e6; font-weight: bold;">${formaTexto}</td>
+                    
+                    <td style="padding: 8px; border: 1px solid #dee2e6; font-size: 13px; ${estiloColunaCartao}">${bandeiraTexto}</td>
+                    <td style="padding: 8px; border: 1px solid #dee2e6; font-size: 13px; text-align: center; ${estiloColunaCartao}">${parcelaTexto}</td>
+                    
+                    <td style="padding: 8px; border: 1px solid #dee2e6; color: #555;">${v.descricao_movimento || v.descricao || 'Venda de Produtos'}</td>
+                    <td style="padding: 8px; border: 1px solid #dee2e6; ${estiloValor}">R$ ${parseFloat(v.total || v.valor || 0).toFixed(2)}</td>
+                    
+                    <td style="padding: 8px; border: 1px solid #dee2e6; text-align: center;">
+                        <button onclick="dispararExclusao('${v.id}')" style="margin-top: 0; padding: 4px 8px; font-size: 12px; background-color: #dc3545; width: auto; font-weight: normal;">
+                            🗑️ Excluir
+                        </button>
+                    </td>
+                `;
+                corpoTabela.appendChild(linha);
+            });
+        }
+
+        // 🎛️ Listeners de controle da paginação do caixa principal
+        document.getElementById('btnLancAnterior').addEventListener('click', () => {
+            if (paginaAtualLanc > 1) {
+                paginaAtualLanc--;
+                renderizarTabelaLancamentosPrincipal();
+            }
+        });
+
+        document.getElementById('btnLancProximo').addEventListener('click', () => {
+            const totalPaginas = Math.ceil(dadosLancamentosCompletos.length / itensPorPaginaLanc);
+            if (paginaAtualLanc < totalPaginas) {
+                paginaAtualLanc++;
+                renderizarTabelaLancamentosPrincipal();
+            }
+        });
+
+        // Abre o modal de validação e foca no campo de usuário do gerente
+        // 🗑️ Gerenciador de exclusão com interface dinâmica para Administradores
+        window.dispararExclusao = (vendaId) => {
+            document.getElementById('idLancamentoParaExcluir').value = vendaId; //
+            document.getElementById('erroAuthGerente').style.display = 'none'; //
+            
+            const usuarioAtualEhAdmin = window.operadorLogado && 
+                                        (window.operadorLogado.role === 'admin' || window.operadorLogado.usuario === 'admin');
+
+            const containerCampos = document.getElementById('containerCamposGerente');
+            const tituloModal = document.getElementById('tituloModalExclusao');
+            const subtituloModal = document.getElementById('subtituloModalExclusao');
+            const btnConfirmar = document.getElementById('btnConfirmarDeletar');
+
+            if (usuarioAtualEhAdmin) {
+                // 🚀 INTERFACE ADMIN: Esconde os inputs do HTML e altera os textos para uma pergunta direta
+                containerCampos.style.display = 'none';
+                tituloModal.innerText = "⚠️ Confirmar Exclusão";
+                subtituloModal.innerHTML = "Você está logado como <strong>Administrador</strong>.<br>Deseja realmente excluir permanentemente este lançamento?";
+                btnConfirmar.innerText = "Sim, Excluir";
+            } else {
+                // 🔒 INTERFACE OPERADOR COMUM: Restaura os campos de credenciais obrigatórios[cite: 21]
+                containerCampos.style.display = 'block';
+                tituloModal.innerText = "🔒 Autorização de Gerente"; //[cite: 21]
+                subtituloModal.innerText = "Esta ação requer credenciais de um superusuário para ser concluída."; //[cite: 21]
+                btnConfirmar.innerText = "Autorizar e Excluir"; //[cite: 21]
+                
+                document.getElementById('authGerenteUsuario').value = ''; //[cite: 21]
+                document.getElementById('authGerenteSenha').value = ''; //[cite: 21]
+            }
+            
+            document.getElementById('modalExclusao').style.display = 'flex'; //[cite: 21]
+            
+            if (!usuarioAtualEhAdmin) {
+                document.getElementById('authGerenteUsuario').focus(); //[cite: 21]
+            }
+        };
+
+        // Ação de confirmar que envia os dados do gerente + ID do item
+        // Ação do botão confirmar que atende os dois cenários de privilégio
+        document.getElementById('btnConfirmarDeletar').addEventListener('click', async () => {
+            const vendaId = document.getElementById('idLancamentoParaExcluir').value; //[cite: 21]
+            const divErro = document.getElementById('erroAuthGerente'); //[cite: 21]
+            divErro.style.display = 'none'; //[cite: 21]
+
+            const usuarioAtualEhAdmin = window.operadorLogado && 
+                                        (window.operadorLogado.role === 'admin' || window.operadorLogado.usuario === 'admin');
+
+            // 1. Cenário se o operador atual já for Administrador (Validação Direta)
+            if (usuarioAtualEhAdmin) {
+                const resultado = await ipcRenderer.invoke('excluir-lancamento', vendaId); //[cite: 21]
+                if (resultado.status === 'sucesso') { //[cite: 21]
+                    document.getElementById('modalExclusao').style.display = 'none'; //[cite: 21]
+                    await atualizarTabelaLancamentosJanela(); //[cite: 21]
+                } else {
+                    divErro.innerText = `❌ Erro ao excluir: ${resultado.mensagem}`;
+                    divErro.style.display = 'block';
+                }
+                return; // Aborta para não rodar a verificação de inputs abaixo
+            }
+
+            // 2. Cenário Padrão: Operador comum precisa colher credenciais do modal[cite: 21]
+            const usuarioGerente = document.getElementById('authGerenteUsuario').value.trim(); //[cite: 21]
+            const senhaGerente = document.getElementById('authGerenteSenha').value; //[cite: 21]
+
+            if (!usuarioGerente || !senhaGerente) { //[cite: 21]
+                divErro.innerText = "⚠️ Preencha as credenciais do gerente!"; //[cite: 21]
+                divErro.style.display = 'block'; //[cite: 21]
+                return; //[cite: 21]
+            }
+
+            const auth = await ipcRenderer.invoke('tentar-login', { usuario: usuarioGerente, senha: senhaGerente }); //[cite: 21]
+
+            if (auth.status === 'sucesso') { //[cite: 21]
+                if (auth.operador.role === 'admin' || auth.operador.usuario === 'admin') { //[cite: 21]
+                    const resultado = await ipcRenderer.invoke('excluir-lancamento', vendaId); //[cite: 21]
+                    if (resultado.status === 'sucesso') { //[cite: 21]
+                        document.getElementById('modalExclusao').style.display = 'none'; //[cite: 21]
+                        await atualizarTabelaLancamentosJanela(); //[cite: 21]
+                    } else {
+                        divErro.innerText = `❌ Erro ao excluir: ${resultado.mensagem}`;
+                        divErro.style.display = 'block';
+                    }
+                } else {
+                    divErro.innerText = "❌ Acesso Negado: Este operador não possui privilégios de Administrador."; //[cite: 21]
+                    divErro.style.display = 'block'; //[cite: 21]
+                }
+            } else {
+                divErro.innerText = "❌ Usuário ou Senha master inválidos."; //[cite: 21]
+                divErro.style.display = 'block'; //[cite: 21]
+            }
+        });
+
+        // Cancela e fecha
+        document.getElementById('btnCancelarDeletar').addEventListener('click', () => {
+            document.getElementById('modalExclusao').style.display = 'none';
+        });
+
+        // Alterna a exibição da lista de lançamentos (Efeito Mostrar/Esconder)
+        document.getElementById('btnToggleLancamentos').addEventListener('click', () => {
+            const container = document.getElementById('containerLancamentos');
+            const botao = document.getElementById('btnToggleLancamentos');
+
+            if (container.style.display === 'none') {
+                // Se está escondido, exibe a div e muda o texto do botão
+                container.style.display = 'block';
+                botao.innerText = '🔼 Ocultar Lançamentos do Turno';
+                botao.style.backgroundColor = '#495057'; // Escurece um pouco o botão ativo
+            } else {
+                // Se está visível, esconde a div e volta o texto original
+                container.style.display = 'none';
+                botao.innerText = '📋 Ver Lançamentos do Turno';
+                botao.style.backgroundColor = '#6c757d'; // Volta para a cor padrão cinza
+            }
+        });
+
+        // 📊 CONTROLE DE HISTÓRICO POR TURNO (ONLINE E ADMIN EXCLUSIVO)
+        // 📊 LISTAGEM DO HISTÓRICO COM SUPORTE A PAGINAÇÃO (MÁX 10)
+        // 📊 CONTROLE DE HISTÓRICO POR TURNO COM FILTRO DINÂMICO
+        document.getElementById('btnVerHistorico').addEventListener('click', async () => {
+            const statusDiv = document.getElementById('statusLog');
+            
+            const ehAdmin = window.operadorLogado && 
+                            (window.operadorLogado.role === 'admin' || window.operadorLogado.usuario === 'admin');
+
+            if (!ehAdmin) {
+                statusDiv.style.display = 'block';
+                statusDiv.className = 'msg-box erro';
+                statusDiv.innerText = "🚫 Acesso Negado: Esta consulta é de uso exclusivo de administradores!";
+                setTimeout(() => { statusDiv.style.display = 'none'; }, 5000);
+                return;
+            }
+
+            // 📅 Define por padrão as datas da semana (Hoje e 7 dias atrás)
+            const hoje = new Date();
+            const umaSemanaAtras = new Date();
+            umaSemanaAtras.setDate(hoje.getDate() - 7);
+
+            // Injeta no formato YYYY-MM-DD que o input[type="date"] exige
+            document.getElementById('filtroDataInicio').value = umaSemanaAtras.toISOString().split('T')[0];
+            document.getElementById('filtroDataFim').value = hoje.toISOString().split('T')[0];
+
+            statusDiv.style.display = 'none';
+            document.getElementById('painelDetalheTurno').style.display = 'none'; 
+            document.getElementById('telaCaixa').style.display = 'none'; 
+            document.getElementById('telaHistorico').style.display = 'block'; 
+            
+            // Dispara a busca oficial
+            await carregarDadosHistoricoFiltrado();
+        });
+
+        // 🌟 NOVO: Listener para o botão de Refresh/Filtrar dentro da tela do histórico
+        document.getElementById('btnAplicarFiltroHist').addEventListener('click', async () => {
+            await carregarDadosHistoricoFiltrado();
+        });
+
+        // Função isolada responsável por fazer o Invoke passando os inputs colhidos em tela
+        async function carregarDadosHistoricoFiltrado() {
+            const corpoTabela = document.getElementById('tabelaHistoricoCorpo');
+            const dataInicio = document.getElementById('filtroDataInicio').value;
+            const dataFim = document.getElementById('filtroDataFim').value;
+
+            corpoTabela.innerHTML = `<tr><td colspan="8" style="padding: 15px; text-align: center; color: #666;">Buscando dados filtrados no servidor...</td></tr>`;
+            
+            try {
+                // Passa as datas limites escolhidas pelo operador admin para o processo Main
+                const resposta = await ipcRenderer.invoke('obter-historico-turnos', { dataInicio, dataFim });
+                
+                if (resposta.status === 'offline') {
+                    corpoTabela.innerHTML = `<tr><td colspan="8" style="padding: 15px; text-align: center; color: #721c24; background-color: #f8d7da;">⚠️ ${resposta.mensagem}</td></tr>`;
+                    return;
+                }
+
+                dadosHistoricoCompletos = resposta.dados || [];
+                paginaAtualHist = 1;
+                renderizarTabelaHistorico();
+
+            } catch (error) {
+                corpoTabela.innerHTML = `<tr><td colspan="8" style="padding: 15px; text-align: center; color: #721c24;">❌ Erro ao processar requisição: ${error.message}</td></tr>`;
+            }
+        }
+
+        // Função responsável por fatiar e desenhar as 10 linhas do histórico na tela
+        function renderizarTabelaHistorico() {
+            const corpoTabela = document.getElementById('tabelaHistoricoCorpo');
+            corpoTabela.innerHTML = '';
+
+            if (dadosHistoricoCompletos.length === 0) {
+                corpoTabela.innerHTML = `<tr><td colspan="8" style="padding: 15px; text-align: center; color: #999;">Nenum turno fechado encontrado no servidor.</td></tr>`;
+                document.getElementById('txtPaginaHist').innerText = "Página 1 de 1";
+                return;
+            }
+
+            // Calcula os índices de corte (Slice)
+            const totalPaginas = Math.ceil(dadosHistoricoCompletos.length / itensPorPaginaHist);
+            if (paginaAtualHist > totalPaginas) paginaAtualHist = totalPaginas;
+            if (paginaAtualHist < 1) paginaAtualHist = 1;
+
+            const inicio = (paginaAtualHist - 1) * itensPorPaginaHist;
+            const fim = inicio + itensPorPaginaHist;
+            const itensPagina = dadosHistoricoCompletos.slice(inicio, fim);
+
+            document.getElementById('txtPaginaHist').innerText = `Página ${paginaAtualHist} de ${totalPaginas}`;
+
+            itensPagina.forEach(t => {
+                const dataAbertura = new Date(t.data_abertura).toLocaleString('pt-BR');
+                const dataFechamento = t.data_fechamento && t.data_fechamento !== 'Finalizado'
+                    ? new Date(t.data_fechamento).toLocaleString('pt-BR') 
+                    : 'N/A';
+
+                const valorContado = parseFloat(t.valor_contado || 0);
+                const diferenca = parseFloat(t.diferenca || 0);
+
+                let estiloDiferenca = 'color: #6c757d; font-weight: bold;';
+                let sinal = '';
+
+                if (diferenca < 0) {
+                    estiloDiferenca = 'color: #dc3545; font-weight: bold; background-color: #fdf2f2;';
+                } else if (diferenca > 0) {
+                    estiloDiferenca = 'color: #28a745; font-weight: bold;';
+                    sinal = '+';
+                }
+
+                const linha = document.createElement('tr');
+                linha.style.cursor = 'pointer';
+                const idDoCaixa = t.caixa_id || ''; 
+                linha.setAttribute('onclick', `verDetalhesDoTurno('${idDoCaixa}', '${t.data_abertura}', '${t.data_fechamento || ''}')`);
+
+                linha.innerHTML = `
+                    <td style="padding: 8px; border: 1px solid #dee2e6;">${t.caixa_nome}</td>
+                    <td style="padding: 8px; border: 1px solid #dee2e6;">${t.operador_nome}</td>
+                    <td style="padding: 8px; border: 1px solid #dee2e6; font-size: 11px;">${dataAbertura}</td>
+                    <td style="padding: 8px; border: 1px solid #dee2e6; font-size: 11px;">${dataFechamento}</td>
+                    <td style="padding: 8px; border: 1px solid #dee2e6; color: green;">R$ ${parseFloat(t.valor_abertura).toFixed(2)}</td>
+                    <td style="padding: 8px; border: 1px solid #dee2e6; color: #007bff; font-weight: bold;">R$ ${parseFloat(t.valor_fechamento).toFixed(2)}</td>
+                    <td style="padding: 8px; border: 1px solid #dee2e6; font-weight: bold; color: #555;">R$ ${valorContado.toFixed(2)}</td>
+                    <td style="padding: 8px; border: 1px solid #dee2e6; ${estiloDiferenca}">R$ ${sinal}${diferenca.toFixed(2)}</td>
+                `;
+                corpoTabela.appendChild(linha);
+            });
+        }
+
+        // Listeners dos Botões do Histórico
+        document.getElementById('btnHistAnterior').addEventListener('click', () => {
+            if (paginaAtualHist > 1) { paginaAtualHist--; renderizarTabelaHistorico(); }
+        });
+        document.getElementById('btnHistProximo').addEventListener('click', () => {
+            const totalPaginas = Math.ceil(dadosHistoricoCompletos.length / itensPorPaginaHist);
+            if (paginaAtualHist < totalPaginas) { paginaAtualHist++; renderizarTabelaHistorico(); }
+        });
+
+        // 📋 Detalhes das movimentações do período selecionado: Abre o extrato detalhado do turno clicado
+        // 📋 FUNÇÃO AUDIO-VISUAL: Abre o extrato detalhado do turno clicado
+        // 📋 FUNÇÃO ATUALIZADA: Extrato Detalhado com Cores Dinâmicas e Dados de Cartão
+        // 📋 EXTRATO DETALHADO DO TURNO SELECIONADO COM PAGINAÇÃO (MÁX 20)
+        // 📋 EXTRATO DETALHADO DO TURNO SELECIONADO COM PAGINAÇÃO CORRIGIDA (MÁX 20)
+        window.verDetalhesDoTurno = async (caixaId, dataAbertura, dataFechamento) => {
+            const idAlvo = (caixaId && caixaId !== 'undefined' && caixaId !== '') ? caixaId : document.getElementById('caixaId').value;
+            const statusDiv = document.getElementById('statusLog');
+            
+            // 🌟 CORREÇÃO SELETOR: Procura primeiro por um ID, se não achar, usa o outro
+            let corpoDetalhe = document.getElementById('tabelaDetalheTurnoCorpo');
+            if (!corpoDetalhe) {
+                corpoDetalhe = document.getElementById('tabelaDetailTurnoCorpo');
+            }
+            
+            if (corpoDetalhe) {
+                corpoDetalhe.innerHTML = `<tr><td colspan="8" style="padding: 10px; text-align: center; color: #666;">Carregando extrato do turno...</td></tr>`;
+            }
+            
+            document.getElementById('painelDetalheTurno').style.display = 'block';
+
+            try {
+                const resposta = await ipcRenderer.invoke('obter-vendas-periodo', { caixaId: idAlvo, dataAbertura, dataFechamento });
+                
+                if (resposta.status === 'offline') {
+                    statusDiv.style.display = 'block';
+                    statusDiv.className = 'msg-box erro';
+                    statusDiv.innerText = `⚠️ Detalhamento Indisponível: ${resposta.mensagem}`;
+                    setTimeout(() => { statusDiv.style.display = 'none'; }, 5000);
+                    if (corpoDetalhe) {
+                        corpoDetalhe.innerHTML = `<tr><td colspan="8" style="padding: 10px; text-align: center; color: #dc3545;">Erro: Conexão offline.</td></tr>`;
+                    }
+                    return;
+                }
+
+                // Armazena os lançamentos completos e abre na página 1
+                dadosDetalheCompletos = resposta.dados || [];
+                paginaAtualDet = 1;
+                renderizarTabelaDetalhe();
+
+            } catch (err) {
+                console.error(err);
+                if (corpoDetalhe) {
+                    corpoDetalhe.innerHTML = `<tr><td colspan="8" style="padding: 10px; text-align: center; color: #dc3545;">❌ Erro interno ao carregar listagem.</td></tr>`;
+                }
+            }
+        };
+
+        // Função responsável por fatiar e desenhar as 20 linhas do extrato operacional
+        function renderizarTabelaDetalhe() {
+            // 🌟 CORREÇÃO SELETOR: Garante a seleção do container correto também na paginação
+            let corpoDetalhe = document.getElementById('tabelaDetalheTurnoCorpo');
+            if (!corpoDetalhe) {
+                corpoDetalhe = document.getElementById('tabelaDetailTurnoCorpo');
+            }
+
+            if (!corpoDetalhe) return; // Aborta se o elemento não existir no HTML
+            corpoDetalhe.innerHTML = '';
+
+            if (dadosDetalheCompletos.length === 0) {
+                corpoDetalhe.innerHTML = `<tr><td colspan="8" style="padding: 10px; text-align: center; color: #999;">Nenhuma venda ou movimentação registrada neste turno.</td></tr>`;
+                document.getElementById('txtPaginaDet').innerText = "Página 1 de 1";
+                return;
+            }
+
+            const totalPaginas = Math.ceil(dadosDetalheCompletos.length / itensPorPaginaDet);
+            if (paginaAtualDet > totalPaginas) paginaAtualDet = totalPaginas;
+            if (paginaAtualDet < 1) paginaAtualDet = 1;
+
+            const inicio = (paginaAtualDet - 1) * itensPorPaginaDet;
+            const fim = inicio + itensPorPaginaDet;
+            const itensPagina = dadosDetalheCompletos.slice(inicio, fim);
+
+            document.getElementById('txtPaginaDet').innerText = `Página ${paginaAtualDet} de ${totalPaginas}`;
+
+            itensPagina.forEach(v => {
+                const dataObjeto = new Date(v.data_venda || v.data_movimento);
+                const dataVendaFormatada = dataObjeto.toLocaleDateString('pt-BR');
+                const horaFormatada = dataObjeto.toLocaleTimeString('pt-BR');
+                
+                const ehEntrada = (v.origem === 'E' || v.tipo_movimento === 'E');
+                const tipoTexto = ehEntrada ? '<span style="color:green;font-weight:bold;">📥 Entrada</span>' : '<span style="color:red;font-weight:bold;">📤 Saída</span>';
+                const estiloValor = ehEntrada ? 'color: #28a745; font-weight: bold; text-align: right;' : 'color: #dc3545; font-weight: bold; text-align: right;';
+
+                const formasNome = { DN: 'Dinheiro', CC: 'C. Crédito', CD: 'C. Débito', PX: 'Pix' };
+                const formaTexto = formasNome[v.forma_pagamento] || v.forma_pagamento || 'Dinheiro';
+
+                let bandeiraTexto = '—';
+                let parcelaTexto = '—';
+                let estiloColunaCartao = 'color: #888; font-style: italic; background-color: #fdfdfd;';
+
+                if (v.forma_pagamento === 'CC') {
+                    bandeiraTexto = v.bandeira || 'Não Inf.';
+                    parcelaTexto = v.parcelas ? `${v.parcelas}x` : '1x';
+                    estiloColunaCartao = 'color: #2b2b2b; font-weight: bold; font-style: normal;';
+                }
+
+                const inline = document.createElement('tr');
+                inline.innerHTML = `
+                    <td style="padding: 6px; border: 1px solid #dee2e6; font-size: 13px;">${dataVendaFormatada}</td>
+                    <td style="padding: 6px; border: 1px solid #dee2e6; font-size: 12px; color: #555;">${horaFormatada}</td>
+                    <td style="padding: 6px; border: 1px solid #dee2e6;">${tipoTexto}</td>
+                    <td style="padding: 6px; border: 1px solid #dee2e6; font-size: 13px; font-weight: bold;">${formaTexto}</td>
+                    <td style="padding: 6px; border: 1px solid #dee2e6; font-size: 13px; ${estiloColunaCartao}">${bandeiraTexto}</td>
+                    <td style="padding: 6px; border: 1px solid #dee2e6; font-size: 13px; text-align: center; ${estiloColunaCartao}">${parcelaTexto}</td>
+                    <td style="padding: 6px; border: 1px solid #dee2e6; color: #666; font-size: 13px;">${v.descricao_movimento || v.descricao || '<em>Sem descrição</em>'}</td>
+                    <td style="padding: 6px; border: 1px solid #dee2e6; ${estiloValor}">R$ ${parseFloat(v.total || v.valor || 0).toFixed(2)}</td>
+                `;
+                corpoDetalhe.appendChild(inline);
+            });
+        }
+
+        // Listeners dos Botões de Detalhes
+        document.getElementById('btnDetAnterior').addEventListener('click', () => {
+            if (paginaAtualDet > 1) { paginaAtualDet--; renderizarTabelaDetalhe(); }
+        });
+        document.getElementById('btnDetProximo').addEventListener('click', () => {
+            const totalPaginas = Math.ceil(dadosDetalheCompletos.length / itensPorPaginaDet);
+            if (paginaAtualDet < totalPaginas) { paginaAtualDet++; renderizarTabelaDetalhe(); }
+        });
+
+        // Botão para voltar do Histórico para a Tela de Vendas
+        document.getElementById('btnVoltarHistorico').addEventListener('click', () => {
+            document.getElementById('telaHistorico').style.display = 'none';
+            document.getElementById('telaCaixa').style.display = 'block';
+        });
+
+        // =====================================================================
+        // 🔄 ROTINAS OPERACIONAIS DO PAINEL DE SINCRONIZAÇÃO MANUAL
+        // =====================================================================
+        
+        document.getElementById('btnVerSincronizacao').addEventListener('click', async () => {
+            document.getElementById('telaCaixa').style.display = 'none';
+            document.getElementById('telaSincronizacao').style.display = 'block';
+            limparConsoleSync("[SISTEMA] Carregando status das tabelas...");
+            await atualizarContadoresSincronizacao();
+        });
+
+        document.getElementById('btnVoltarSincronizacao').addEventListener('click', () => {
+            document.getElementById('telaSincronizacao').style.display = 'none';
+            document.getElementById('telaCaixa').style.display = 'block';
+        });
+
+        document.getElementById('btnRefreshSincronizacao').addEventListener('click', async () => {
+            await atualizarContadoresSincronizacao();
+            imprimirNoConsoleSync("[INFO] Contadores atualizados com sucesso.");
+        });
+
+        async function atualizarContadoresSincronizacao() {
+            const status = await ipcRenderer.invoke('obter-status-sincronizacao');
+            
+            // Injeta os valores coletados do SQLite na interface
+            document.getElementById('txtTotalVendas').innerText = status.vendas.total;
+            document.getElementById('txtPendentesVendas').innerText = status.vendas.pendentes;
+            document.getElementById('btnSyncVendas').disabled = (status.vendas.pendentes === 0);
+            document.getElementById('btnSyncVendas').style.opacity = (status.vendas.pendentes === 0) ? '0.5' : '1';
+
+            document.getElementById('txtTotalTurnos').innerText = status.turnos.total;
+            document.getElementById('txtPendentesTurnos').innerText = status.turnos.pendentes;
+            document.getElementById('btnSyncTurnos').disabled = (status.turnos.pendentes === 0);
+            document.getElementById('btnSyncTurnos').style.opacity = (status.turnos.pendentes === 0) ? '0.5' : '1';
+
+            document.getElementById('txtTotalRecebiveis').innerText = status.recebiveis.total;
+            document.getElementById('txtPendentesRecebiveis').innerText = status.recebiveis.pendentes;
+            document.getElementById('btnSyncRecebiveis').disabled = (status.recebiveis.pendentes === 0);
+            document.getElementById('btnSyncRecebiveis').style.opacity = (status.recebiveis.pendentes === 0) ? '0.5' : '1';
+        }
+
+        // Listeners de execução de sincronização manual por demanda de tabela
+        document.getElementById('btnSyncVendas').addEventListener('click', () => dispararFluxoSyncTabela('vendas'));
+        document.getElementById('btnSyncTurnos').addEventListener('click', () => dispararFluxoSyncTabela('turnos'));
+        document.getElementById('btnSyncRecebiveis').addEventListener('click', () => dispararFluxoSyncTabela('recebiveis'));
+
+        async function dispararFluxoSyncTabela(tipo) {
+            imprimirNoConsoleSync(`[INFO] Conectando ao servidor para processar lote de ${tipo.toUpperCase()}...`);
+            const resposta = await ipcRenderer.invoke('sincronizar-tabela-manual', tipo);
+            
+            if (resposta.status === 'sucesso') {
+                resposta.logs.forEach(msg => {
+                    console.log(msg); // Imprime no Terminal do VSCode/Console
+                    imprimirNoConsoleSync(msg); // Imprime no Monitor HTML
+                });
+                await atualizarContadoresSincronizacao();
+            } else {
+                console.error(`[ERRO SYNC]: ${resposta.mensagem}`);
+                imprimirNoConsoleSync(`❌ [FALHA DE REDE]: ${resposta.mensagem}`);
+            }
+        }
+
+        function imprimirNoConsoleSync(mensagem) {
+            const caixaConsole = document.getElementById('consoleLogSync');
+            if (caixaConsole) {
+                caixaConsole.innerHTML += `<br>${mensagem}`;
+                caixaConsole.scrollTop = caixaConsole.scrollHeight; // Auto scroll pro final
+            }
+        }
+
+        function limparConsoleSync(mensagemInicial) {
+            const caixaConsole = document.getElementById('consoleLogSync');
+            if (caixaConsole) caixaConsole.innerHTML = mensagemInicial;
+        }
+    </script>
+</body>
+</html>
