@@ -23,6 +23,10 @@ class DatabaseManager {
         this.pgClient = null;
         this.sqliteDb = null;
         
+        // 🌐 VARIÁVEIS GLOBAIS DE TENANT DO TERMINAL
+        this.tenantEmpresaId = null;
+        this.tenantFilialId = null;
+
         // No Windows, salva o arquivo .db na pasta AppData do usuário
         this.sqlitePath = path.join(app.getPath('userData'), 'pdv_local.db');
     }
@@ -33,30 +37,43 @@ class DatabaseManager {
     }
 
     async realizarLogin(usuario, senha, caixaId) {
-        // 🌟 CRIPTOGRAFIA: Converte a senha recebida em texto limpo para o Hash correspondente
-        // 🔒 Se a senha recebida já tiver 64 caracteres, significa que é o Hash vindo do login automático. 
-        // Caso contrário, é texto limpo digitado na hora e precisa gerar o Hash.
-        const senhaCriptografada = (senha && senha.length === 64) ? senha : this.gerarHashSenha(senha);
+        // HIGIENIZAÇÃO E CONVERSÃO ESTRITA
+        const usuarioStr = String(usuario || '').trim();
+        const senhaStr = String(senha || '').trim();
+        const caixaIdStr = caixaId ? String(caixaId).trim() : null;
+        
+        console.log(`\n💾 [DB-LOGIN] Entrando na verificação do banco...`);
+        console.log(`👉 Recebido -> Usuário: "${usuarioStr}" | Senha original: "${senhaStr}"`);
+
+        // 🔒 Verifica se já é o hash de 64 caracteres ou texto puro
+        const senhaCriptografada = (senhaStr.length === 64) 
+            ? senhaStr 
+            : this.gerarHashSenha(senhaStr);
+        
+        console.log(`🔒 [DB-LOGIN] Tratamento final da senha -> Hash SHA-256 gerado/mantido: "${senhaCriptografada}"`);
         
         let operador = null;
 
         // 1. SE ESTIVER ONLINE, TENTA VALIDAR NO POSTGRESQL
         if (this.isOnline) {
             try {
-                // 🛠️ AJUSTADO: Agora envia a "senhaCriptografada" para o banco
+                console.log(`📡 [DB-LOGIN] Buscando usuário no PostgreSQL externo...`);
                 const query = "SELECT id, usuario, nome, role, bloqueado, trocar_senha_prox_login FROM usuarios WHERE usuario = $1 AND senha = $2 AND usuario_pdv = 'S' AND deletado = false";
-                const resultado = await this.pgClient.query(query, [usuario, senhaCriptografada]);
+                const resultado = await this.pgClient.query(query, [usuarioStr, senhaCriptografada]);
                 
                 if (resultado.rows.length > 0) {
                     operador = resultado.rows[0];
+                    console.log(`📡 [DB-LOGIN] Localizado no Postgres!`);
                     
-                    // 🌟 MUDADO: Grava na tabela usuarios_locais
+                    // Sincroniza na base local
                     this.sqliteDb.run(
                         `INSERT INTO usuarios_locais (id, usuario, nome, senha, role, bloqueado, usuario_pdv, trocar_senha_prox_login) 
                         VALUES (?, ?, ?, ?, ?, 'N', 'S', ?) 
                         ON CONFLICT(usuario) DO UPDATE SET nome=?, senha=?, role=?, trocar_senha_prox_login=?`,
                         [operador.id, operador.usuario, operador.nome, senhaCriptografada, operador.role, operador.trocar_senha_prox_login, operador.nome, senhaCriptografada, operador.role, operador.trocar_senha_prox_login]
                     );
+                } else {
+                    console.log(`⚠️ [DB-LOGIN] Combinação usuário/senha não encontrada no Postgres.`);
                 }
             } catch (err) {
                 console.log("Erro no login do Postgres, tentando SQLite...", err);
@@ -64,13 +81,11 @@ class DatabaseManager {
             }
         }
 
-        // 2. MODO OFFLINE
+        // 2. MODO OFFLINE DE CONTINGÊNCIA
         if (!operador) {
             operador = await new Promise((resolve, reject) => {
-                // 🛠️ AJUSTADO: Agora filtra pela "senhaCriptografada" no SQLite local também
-                // 🌟 MUDADO: Busca na tabela usuarios_locais
                 const query = "SELECT id, usuario, nome, role, bloqueado FROM usuarios_locais WHERE usuario = ? AND senha = ? AND usuario_pdv = 'S' AND deletado = 0";
-                this.sqliteDb.get(query, [usuario, senhaCriptografada], (err, row) => {
+                this.sqliteDb.get(query, [usuarioStr, senhaCriptografada], (err, row) => {
                     if (err) reject(err);
                     else resolve(row || null);
                 });
@@ -80,17 +95,17 @@ class DatabaseManager {
         if (!operador) return null; 
 
         // =====================================================================
-        // 🌟 EXCEÇÃO MASTER: Admins têm livre acesso a qualquer terminal
+        // 🌟 EXCEÇÃO MASTER ANTECIPADA: Admins pulam qualquer trava de turno!
         // =====================================================================
         if (operador.role === 'admin' || operador.usuario === 'admin') {
-            console.log(`🔓 [LOGIN] Administrador "${operador.nome}" autenticado. Ignorando travas de segurança.`);
+            console.log(`🔓 [LOGIN] Administrador "${operador.nome}" autenticado com sucesso.`);
             return operador;
         }
 
         // =====================================================================
-        // 3. TRAVA A: Verifica se o terminal atual (caixaId) pertence a outro operador
+        // 3. TRAVA A: Verifica se o terminal atual pertence a outro operador
         // =====================================================================
-        if (caixaId) {
+        if (caixaIdStr) {
             let caixaDono = null;
             
             if (this.isOnline) {
@@ -102,7 +117,7 @@ class DatabaseManager {
                         WHERE m.caixa_id = $1 AND m.status = 'A' AND m.deletado = false
                         LIMIT 1
                     `;
-                    const resCaixa = await this.pgClient.query(queryCaixa, [caixaId]);
+                    const resCaixa = await this.pgClient.query(queryCaixa, [caixaIdStr]);
                     if (resCaixa.rows.length > 0) caixaDono = resCaixa.rows[0];
                 } catch (err) { this.isOnline = false; }
             }
@@ -112,13 +127,12 @@ class DatabaseManager {
                     this.sqliteDb.get(
                         `SELECT m.operador_abertura_id, 'Outro Operador (Offline)' AS dono_nome 
                         FROM movimentos_caixa_locais m 
-                        WHERE m.caixa_id = ? AND m.status = 'A' AND m.deletado = 0`, // 🌟 CORRIGIDO: false para 0
-                        [caixaId], (err, row) => resolve(row)
+                        WHERE m.caixa_id = ? AND m.status = 'A' AND m.deletado = 0`,
+                        [caixaIdStr], (err, row) => resolve(row)
                     );
                 });
             }
 
-            // Se o caixa está aberto por outra pessoa, bloqueia (Admins já foram filtrados acima)
             if (caixaDono && caixaDono.operador_abertura_id !== operador.id) {
                 throw new Error(`Este terminal já possui um turno ativo do operador: "${caixaDono.dono_nome}". Finalize o turno atual antes de trocar de operador.`);
             }
@@ -155,50 +169,78 @@ class DatabaseManager {
         }
 
         if (turnoAtivo) {
-            if (turnoAtivo.cod_caixa != caixaId) {
+            if (String(turnoAtivo.cod_caixa).trim() !== caixaIdStr) {
                 throw new Error(`Este operador já possui um turno aberto no terminal: "${turnoAtivo.caixa_nome}". Encerre a outra sessão antes.`);
             }
-            // 🌟 CORRIGIDO: Se o turno ativo for neste mesmo caixa, permite retornar o operador para continuar trabalhando
         }
 
         return operador;
     }
 
+    // Atualize por completo o método obterDadosCaixa
     async obterDadosCaixa(caixaId) {
-        // 1. Se estiver online, tenta buscar no PostgreSQL (Linux)
+        const caixaLocal = await new Promise((resolve) => {
+            const queryLocal = 'SELECT id, descricao, empresa_id, filial_id FROM caixas_locais WHERE id = ? AND deletado = 0';
+            this.sqliteDb.get(queryLocal, [caixaId], (err, row) => {
+                if (err) resolve(null);
+                else resolve(row || null);
+            });
+        });
+
+        if (caixaLocal && caixaLocal.empresa_id && caixaLocal.filial_id) {
+            console.log("💾 [LOCAL] IDs de Empresa e Filial carregados com sucesso do SQLite.");
+            
+            this.tenantEmpresaId = caixaLocal.empresa_id;
+            this.tenantFilialId = caixaLocal.filial_id;
+
+            return {
+                id: caixaLocal.id,
+                descricao: caixaLocal.descricao,
+                empresa_id: caixaLocal.empresa_id,
+                filial_id: caixaLocal.filial_id,
+                empresa_nome: "Grupo Alfa Varejo", // 🌟 ADICIONADO PARA O FRONT-END
+                filial_nome: "Alfa Matriz"         // 🌟 ADICIONADO PARA O FRONT-END
+            };
+        }
+
         if (this.isOnline) {
             try {
-                // 🛠️ AJUSTADO: Removido o campo "bloqueado" ou "status" para bater com as 3 colunas atuais
-                const query = 'SELECT id, descricao FROM caixas WHERE id = $1 AND deletado = false';
-                const resultado = await this.pgClient.query(query, [caixaId]);
+                const queryPG = 'SELECT id, descricao, empresa_id, filial_id FROM caixas WHERE id = $1 AND deletado = false';
+                const resultado = await this.pgClient.query(queryPG, [caixaId]);
                 
                 if (resultado.rows.length > 0) {
                     const caixa = resultado.rows[0];
                     
-                    // 🛠️ AJUSTADO: Apenas 3 valores inseridos no SQLite
-                    this.sqliteDb.run(
-                        `INSERT INTO caixas_locais (id, descricao, deletado) 
-                         VALUES (?, ?, 0) 
-                         ON CONFLICT(id) DO UPDATE SET descricao=?`,
-                        [caixa.id, caixa.descricao, caixa.descricao]
-                    );
+                    this.tenantEmpresaId = caixa.empresa_id;
+                    this.tenantFilialId = caixa.filial_id;
                     
-                    return caixa;
+                    await new Promise((resolve) => {
+                        this.sqliteDb.run(
+                            `INSERT INTO caixas_locais (id, descricao, empresa_id, filial_id, deletado) 
+                            VALUES (?, ?, ?, ?, 0) 
+                            ON CONFLICT(id) DO UPDATE SET descricao=?, empresa_id=?, filial_id=?`,
+                            [caixa.id, caixa.descricao, caixa.empresa_id, caixa.filial_id, caixa.descricao, caixa.empresa_id, caixa.filial_id],
+                            () => resolve()
+                        );
+                    });
+                    
+                    console.log("🔌 [POSTGRES] Dados de governança baixados e salvos no SQLite Local.");
+                    return {
+                        id: caixa.id,
+                        descricao: caixa.descricao,
+                        empresa_id: caixa.empresa_id,
+                        filial_id: caixa.filial_id,
+                        empresa_nome: "Grupo Alfa Varejo", // 🌟 ADICIONADO PARA O FRONT-END
+                        filial_nome: "Alfa Matriz"         // 🌟 ADICIONADO PARA O FRONT-END
+                    };
                 }
             } catch (err) {
-                console.log("Erro ao buscar caixa no Postgres, tentando SQLite...", err);
+                console.log("Erro ao sincronizar dados do caixa com Postgres:", err);
                 this.isOnline = false;
             }
         }
 
-        // 2. Se offline, busca no SQLite local
-        return new Promise((resolve, reject) => {
-            const query = 'SELECT id, descricao FROM caixas_locais WHERE id = ? AND deletado = 0';
-            this.sqliteDb.get(query, [caixaId], (err, row) => {
-                if (err) reject(err);
-                else resolve(row || null); 
-            });
-        });
+        return caixaLocal; 
     }
 
     // 🌟 MODIFICADO: Agora o método init recebe as credenciais lidas do JSON pelo Main
@@ -258,12 +300,15 @@ class DatabaseManager {
         `);
         
         // 2. Cria a tabela de caixas locais (Controle do Terminal)
+        // 2. Cria a tabela de caixas locais (Controle do Terminal com Tenant)
         this.sqliteDb.run(`
             CREATE TABLE IF NOT EXISTS caixas_locais (
                 id TEXT PRIMARY KEY,
                 descricao TEXT NOT NULL,
+                empresa_id TEXT,    -- 🌟 ADICIONADO PARA CONTINGÊNCIA OFFLINE
+                filial_id TEXT,     -- 🌟 ADICIONADO PARA CONTINGÊNCIA OFFLINE
                 bloqueado TEXT NOT NULL DEFAULT 'N',
-                deletado INTEGER DEFAULT 0 -- 🌟 Adicionado
+                deletado INTEGER DEFAULT 0
             )
         `);
         
@@ -319,30 +364,54 @@ class DatabaseManager {
                 deletado INTEGER DEFAULT 0
             )
         `);
+        
     }
 
     async sincronizarOperadores() {
         if (!this.isOnline || !this.pgClient) {
             console.log("[SYNC] Sistema em modo offline. Pulando carga de operadores.");
-            return { status: 'offline', mensagem: 'Sem conexão estabelecida com o servidor.' };
+            return { status: 'offline', manager: 'Sem conexão estabelecida com o servidor.' };
+        }
+
+        // 🌟 NOVA VALIDAÇÃO DE SEGURANÇA: Se o terminal não carregou a Empresa/Filial local, não sabe quem sincronizar
+        if (!this.tenantEmpresaId || !this.tenantFilialId) {
+            console.log("[SYNC] ⚠️ Empresa ou Filial do terminal não carregadas em memória. Abortando sync de operadores por segurança.");
+            return { status: 'erro', mensagem: 'IDs de governança ausentes no boot.' };
         }
 
         try {
-            console.log("[SYNC] Buscando operadores no PostgreSQL...");
+            console.log(`[SYNC] Buscando operadores permitidos para a Empresa: ${this.tenantEmpresaId} | Filial: ${this.tenantFilialId}...`);
             
-            // Adicionado a busca da coluna role no sync
-            // 🌟 MUDADO: Busca da tabela usuarios filtrando apenas quem tem acesso ao PDV
-            const queryPG = "SELECT id, usuario, nome, senha, role, bloqueado, usuario_pdv, trocar_senha_prox_login FROM usuarios WHERE usuario_pdv = 'S' AND deletado = false";
-            const resultado = await this.pgClient.query(queryPG);
+            // 🌟 CONSULTA POSTGRESQL ATUALIZADA:
+            // Cruza a tabela 'usuarios' com a 'usuarios_acessos' para validar quem tem permissão explícita nesta unidade
+            // 🌟 CONSULTA POSTGRESQL CORRIGIDA: Removido o filtro 'a.deletado' que não existe na pivô
+            const queryPG = `
+                SELECT DISTINCT
+                    u.id, 
+                    u.usuario, 
+                    u.nome, 
+                    u.senha, 
+                    u.role, 
+                    u.bloqueado, 
+                    u.usuario_pdv, 
+                    u.trocar_senha_prox_login
+                FROM usuarios u
+                JOIN usuarios_acessos a ON a.usuario_id = u.id
+                WHERE u.usuario_pdv = 'S' 
+                  AND u.deletado = false
+                  AND a.empresa_id = $1 
+                  AND a.filial_id = $2
+            `;
+            
+            const resultado = await this.pgClient.query(queryPG, [this.tenantEmpresaId, this.tenantFilialId]);
             const operadoresServidor = resultado.rows;
 
-            console.log(`[SYNC] Gravar ${operadoresServidor.length} operadores no SQLite...`);
+            console.log(`[SYNC] Gravar ${operadoresServidor.length} operadores autorizados no SQLite...`);
 
             return new Promise((resolve, reject) => {
                 this.sqliteDb.serialize(() => {
                     this.sqliteDb.run("BEGIN TRANSACTION");
 
-                    // 🌟 MUDADO: Mapeado para inserir na tabela usuarios_locais com os novos campos
                     const stmt = this.sqliteDb.prepare(`
                         INSERT INTO usuarios_locais (id, usuario, nome, senha, role, bloqueado, usuario_pdv, trocar_senha_prox_login)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -373,7 +442,7 @@ class DatabaseManager {
             });
 
         } catch (error) {
-            console.error("[SYNC] Conexão com o Postgres falhou durante a sincronização:", error.message);
+            console.error("[SYNC] Conexão com o Postgres falhou durante a sincronização de operadores:", error.message);
             this.isOnline = false; 
             return { 
                 status: 'offline_contingencia', 
@@ -433,22 +502,23 @@ class DatabaseManager {
             }
         }
 
+        const jaSincronizado = this.isOnline ? 1 : 0; // 🌟 Identifica se subiu na hora pro Postgres
+
         return new Promise((resolve, reject) => {
-            // No SQLite local, mantemos a gravação original (ou adicionamos se quiser auditoria local rígida)
             const queryLite = `
-                INSERT INTO movimentos_caixa_locais (id, caixa_id, operador_abertura_id, data_abertura, valor_abertura, status) 
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO movimentos_caixa_locais (id, caixa_id, operador_abertura_id, data_abertura, valor_abertura, status, sincronizado) 
+                VALUES (?, ?, ?, ?, ?, ?, ?)
             `;
             
             this.sqliteDb.run(
                 queryLite, 
-                [idMovimento, caixaId, operadorId, dataAtual, valorAbertura, 'A'], 
+                [idMovimento, caixaId, operadorId, dataAtual, valorAbertura, 'A', jaSincronizado], 
                 (err) => {
                     if (err) {
                         console.error("[BANCO] Erro crítico ao salvar no SQLite:", err);
                         reject(err);
                     } else {
-                        console.log("[BANCO] Turno de caixa aberto com sucesso no SQLite.");
+                        console.log(`[BANCO] Turno de caixa aberto com sucesso no SQLite (Sincronizado: ${jaSincronizado}).`);
                         resolve({ status: 'sucesso', id: idMovimento });
                     }
                 }
@@ -707,14 +777,16 @@ class DatabaseManager {
             } catch (err) { this.isOnline = false; }
         }
 
+        const jaSincronizadoFec = this.isOnline ? 1 : 0; // 🌟 Se fechou direto na nuvem, marca como sincronizado local
+
         return new Promise((resolve, reject) => {
             const queryLite = `
                 UPDATE movimentos_caixa_locais 
                 SET status = 'F', data_fechamento = ?, operador_fechamento_id = ?, 
-                    valor_fechamento = ?, valor_contado = ?, diferenca = ?, sincronizado = 0
+                    valor_fechamento = ?, valor_contado = ?, diferenca = ?, sincronizado = ?
                 WHERE id = ?
             `;
-            this.sqliteDb.run(queryLite, [dataAtual, operadorFechamentoId, valorFechamento, valorContado, diferenca, movimentoId], (err) => {
+            this.sqliteDb.run(queryLite, [dataAtual, operadorFechamentoId, valorFechamento, valorContado, diferenca, jaSincronizadoFec, movimentoId], (err) => {
                 if (err) reject(err);
                 else resolve({ status: 'sucesso' });
             });
@@ -985,7 +1057,7 @@ class DatabaseManager {
                 `;
                 await this.pgClient.query(queryPG, [t.id, t.caixa_id, t.operador_abertura_id, t.operador_fechamento_id, t.data_abertura, t.data_fechamento, t.valor_abertura, t.valor_fechamento, t.valor_contado, t.diferenca, t.status, t.deletado === 1, empId, filId]);
                 
-                // 🌟 CORREÇÃO: Força o SQLite a aguardar a gravação do status de sincronizado antes de ir para o próximo registro
+                // 🌟 CORREÇÃO CRUCIAL: Força o JavaScript a esperar o SQLite gravar fisicamente o status de sincronizado antes de ir pro próximo loop
                 await new Promise((resolve, reject) => {
                     this.sqliteDb.run(`UPDATE movimentos_caixa_locais SET sincronizado = 1 WHERE id = ?`, [t.id], (err) => {
                         if (err) {

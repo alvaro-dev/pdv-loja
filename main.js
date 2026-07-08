@@ -92,9 +92,9 @@ app.whenReady().then(async () => {
     await db.init(dadosBanco); 
     
     // Dispara a sincronização de operadores logo após iniciar o banco
-    db.sincronizarOperadores() //
-        .then(res => console.log(`[SYNC] Operadores prontos:`, res)) //
-        .catch(err => console.error(`[SYNC] Falha ao sincronizar operadores no início:`, err)); //
+    //db.sincronizarOperadores() //
+    //    .then(res => console.log(`[SYNC] Operadores prontos:`, res)) //
+    //    .catch(err => console.error(`[SYNC] Falha ao sincronizar operadores no início:`, err)); //
 
     createWindow(); //
     iniciarTimerSincronizacao(); //
@@ -115,23 +115,25 @@ app.on('window-all-closed', () => {
  */
 
  ipcMain.handle('tentar-login', async (event, { usuario, senha, caixaId }) => {
-     try {
-        // O operador só passa a existir a partir desta linha:
+    try {
+        console.log(`\n🚀 [IPC-LOGIN] Tentativa de login recebida no Main -> Usuário: "${usuario}" | Tamanho da Senha: ${senha ? senha.length : 0} caracteres`);
+        
         const operador = await db.realizarLogin(usuario, senha, caixaId);
         
         if (!operador) {
+            console.log(`❌ [IPC-LOGIN] Rejeitado pelo banco para o usuário: "${usuario}"`);
             return { status: 'erro', mensagem: 'Usuário ou senha incorretos.' };
         }
 
+        console.log(`✅ [IPC-LOGIN] Autenticado com sucesso! Operador: "${operador.nome}" | Privilégio: "${operador.role}"`);
         return { status: 'sucesso', operador };
 
     } catch (error) {
-        // 🚨 MUITA ATENÇÃO AQUI: 
-        // No catch, a variável "operador" NÃO existe. Temos que usar apenas "error.message"
-        console.error("Bloqueio de segurança no login:", error.message);
+        console.error("🚨 [IPC-LOGIN] Bloqueio de segurança ou exceção:", error.message);
         return { status: 'erro', mensagem: error.message };
     }
 });
+
 
 ipcMain.handle('efetuar-venda', async (event, dadosVenda) => {
     try {
@@ -167,15 +169,21 @@ ipcMain.handle('efetuar-venda', async (event, dadosVenda) => {
 });
 
 // Canal para carregar os dados do caixa na inicialização
+// Canal para carregar os dados do caixa na inicialização com metadados corporativos
 ipcMain.handle('carregar-caixa', async (event, caixaId) => {
     try {
         const caixa = await db.obterDadosCaixa(caixaId);
         
         if (!caixa || caixa.bloqueado === 'S') {
-            // Envia um comando para exibir o alerta antes de fechar
             return { status: 'erro', mensagem: 'Caixa não cadastrado para este ponto de venda ou está bloqueado!' };
         }
         
+        // 🌟 ADICIONADO AQUI: Agora que o caixa carregou os IDs em memória, dispara o Sync de Operadores com segurança!
+        db.sincronizarOperadores()
+            .then(res => console.log(`[SYNC-AUTOMATICO] Operadores autorizados sincronizados:`, res))
+            .catch(err => console.error(`[SYNC-AUTOMATICO] Falha no sync de operadores:`, err.message));
+        
+        // Retorna o objeto completo incluindo empresa_id e filial_id para o index.html
         return { status: 'sucesso', dados: caixa };
     } catch (error) {
         return { status: 'erro', mensagem: error.message };
@@ -270,25 +278,35 @@ ipcMain.handle('obter-vendas-periodo', async (event, { caixaId, dataAbertura, da
 
 // 💾 Canal para salvar as credenciais salvas no config.json do Windows
 // 💾 Canal Corrigido: Trata o Hash no processo principal (Main) antes de salvar no config.json
+// 💾 Canal Corrigido: Trata o Hash e salva estritamente no nó 'lembrarOperador'
 ipcMain.handle('salvar-lembrete-login', async (event, { usuario, senha, ativo }) => {
     try {
+        const crypto = require('crypto'); // Garante o escopo do módulo
         let config = {};
         if (fs.existsSync(caminhoConfig)) {
             config = JSON.parse(fs.readFileSync(caminhoConfig, 'utf8'));
         }
         
-        if (ativo) {
-            // Se a senha já vier como hash de 64 caracteres (login automático), mantém. 
-            // Caso contrário, gera o hash SHA-256 usando o método do database.js
-            const hashFinal = (senha && senha.length === 64) ? senha : db.gerarHashSenha(senha);
-            config.lembrarOperador = { usuario, senha: honestyHash(hashFinal) };
+        if (ativo && usuario && senha) {
+            // Gera o Hash SHA-256 síncrono para garantir estabilidade pura
+            const hashFinal = (senha.length === 64) 
+                ? senha 
+                : crypto.createHash('sha256').update(senha).digest('hex');
+            
+            // 🌟 CORREÇÃO: Salva exatamente na propriedade esperada pelo config.json
+            config.lembrarOperador = { 
+                usuario: usuario, 
+                senha: honestyHash(hashFinal) 
+            };
         } else {
+            // Se o operador deslogar ou desmarcar, remove a propriedade de forma limpa
             delete config.lembrarOperador;
         }
         
         fs.writeFileSync(caminhoConfig, JSON.stringify(config, null, 2));
         return { status: 'sucesso' };
     } catch (err) {
+        console.error("Erro ao salvar lembrete de login:", err.message);
         return { status: 'erro', mensagem: err.message };
     }
 });
@@ -298,16 +316,24 @@ ipcMain.handle('obter-lembrete-login', async () => {
     try {
         if (fs.existsSync(caminhoConfig)) {
             const config = JSON.parse(fs.readFileSync(caminhoConfig, 'utf8'));
-            if (config.lembrarOperador) {
+            
+            console.log("\n🔍 [CONFIG.JSON] Conteúdo bruto lido do arquivo:", config.lembrarOperador);
+
+            if (config && config.lembrarOperador) {
+                const senhaDesofuscada = desofuscarSenha(config.lembrarOperador.senha);
+                console.log(`🔑 [CONFIG.JSON] Usuário localizado: "${config.lembrarOperador.usuario}" | Hash extraído: "${senhaDesofuscada}"`);
+                
                 return { 
                     status: 'sucesso', 
                     usuario: config.lembrarOperador.usuario, 
-                    senhaHash: desofuscarSenha(config.lembrarOperador.senha) 
+                    senhaHash: senhaDesofuscada
                 };
             }
         }
+        console.log("ℹ️ [CONFIG.JSON] Nenhuma credencial de login automático foi localizada.");
         return { status: 'vazio' };
     } catch (err) {
+        console.error("❌ [CONFIG.JSON] Erro ao ler lembrete de login:", err);
         return { status: 'erro' };
     }
 });

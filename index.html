@@ -55,10 +55,93 @@
         #telaLogin { display: block; } 
         #telaAbertura { display: none; }
         #telaCaixa { display: none; } 
+
+        /* 🗺️ BARRA SUPERIOR DE STATUS CORPORATIVO */
+        .status-navbar {
+            width: 100%;
+            background-color: #1e293b; /* Slate escuro moderno */
+            color: #f8fafc;
+            padding: 10px 24px;
+            box-sizing: border-box;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 3px solid #007bff;
+            position: fixed;
+            top: 0;
+            left: 0;
+            z-index: 1000;
+            box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);
+        }
+
+        .status-group {
+            display: flex;
+            align-items: center;
+            gap: 20px;
+        }
+
+        .status-item {
+            font-size: 13px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .status-label {
+            color: #94a3b8; /* Cinza suave */
+            font-weight: 600;
+            text-transform: uppercase;
+            font-size: 11px;
+        }
+
+        .status-value {
+            font-weight: bold;
+            color: #ffffff;
+        }
+
+        /* Badge de conexão */
+        .badge-online {
+            background-color: #10b981;
+            color: white;
+            padding: 3px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: bold;
+        }
+
+        /* Ajuste para o container não sumir embaixo do cabeçalho */
+        body {
+            padding-top: 80px !important; 
+        }
     </style>
 </head>
 <body>
 
+    <div id="navbarStatus" class="status-navbar" style="display: none;">
+        <div class="status-group">
+            <div class="status-item">
+                <span class="status-label">👤 Operador:</span>
+                <span id="navOperadorNome" class="status-value">—</span>
+            </div>
+            <div class="status-item">
+                <span class="status-label">🖥️ Terminal:</span>
+                <span id="navCaixaDescricao" class="status-value">—</span>
+            </div>
+        </div>
+        
+        <div class="status-group">
+            <div class="status-item">
+                <span class="status-label">🏢 Empresa:</span>
+                <span id="navEmpresaNome" class="status-value" style="color: #60a5fa;">—</span>
+            </div>
+            <div class="status-item">
+                <span class="status-label">📍 Filial:</span>
+                <span id="navFilialNome" class="status-value" style="color: #38bdf8;">—</span>
+            </div>
+            <span id="badgeRede" class="badge-online">ONLINE</span>
+        </div>
+    </div>
+    
     <div id="telaLogin" class="container login-box">
         <h2>Acesso ao Operador</h2>
         <div class="form-group">
@@ -267,16 +350,6 @@
         <input type="hidden" id="operadorId" value="">
 
         <div class="form-group">
-            <label>Operador Logado:</label>
-            <input type="text" id="operadorNome" value="" disabled>
-        </div>
-
-        <div class="form-group">
-            <label for="caixaDescricao">Identificação do Terminal:</label>
-            <input type="text" id="caixaDescricao" value="" disabled>
-        </div>
-
-        <div class="form-group">
             <label for="origem">Origem do Movimento:</label>
             <select id="origem">
                 <option value="E">E - Entrada (Venda/Aporte)</option>
@@ -411,158 +484,165 @@
         const itensPorPaginaDet = 50;
         
         // 1. Inicialização, Identificação da Máquina e Login Automático Blindado
+        // 1. Inicialização, Identificação da Máquina e Login Automático Totalmente Blindado
         window.addEventListener('DOMContentLoaded', async () => {
+            console.log("🖥️ [BOOT-FRONT] Iniciando carregamento do DOM...");
+            let caixaIdDaMaquina = null;
+            
             try {
-                const caixaIdDaMaquina = await ipcRenderer.invoke('obter-id-maquina');
+                caixaIdDaMaquina = await ipcRenderer.invoke('obter-id-maquina');
+                console.log("🖥️ [BOOT-FRONT] ID da máquina recuperado:", caixaIdDaMaquina);
                 
-                // CONFIGURAÇÃO INTERATIVA: Terminal Não Configurado
                 if (!caixaIdDaMaquina) {
-                    const divErroLogin = document.getElementById('erroLogin');
-                    if (divErroLogin) {
-                        divErroLogin.innerHTML = `
-                            <div style="text-align: left; font-size: 14px; line-height: 1.5;">
-                                <span style="font-size: 16px;">🖥️ <strong>Terminal Não Configurado!</strong></span><br><br>
-                                Insira o ID deste caixa abaixo para registrar este computador.<br><br>
-                                <div style="display: flex; gap: 8px; margin-bottom: 12px;">
-                                    <input type="text" id="inputManualCaixaId" placeholder="Cole o UUID do Caixa aqui" style="padding: 8px; font-size: 14px; flex: 1; border-radius: 4px; border: 1px solid #ccc; color: #333;">
-                                    <button id="btnSalvarCaixaManual" style="margin-top: 0; width: auto; padding: 8px 15px; font-size: 14px; background-color: #28a745;">Gravar</button>
-                                </div>
-                            </div>
-                        `;
-                        divErroLogin.style.display = 'block';
-                        document.getElementById('btnSalvarCaixaManual').addEventListener('click', executarGravacaoManualCaixa);
-                    }
-                    
-                    const btnLogar = document.getElementById('btnLogar');
-                    if (btnLogar) btnLogar.style.display = 'none';
+                    exibirErroTerminalNaoConfigurado();
                     return;
                 }
+            } catch (err) {
+                console.error("Erro ao obter ID do caixa:", err);
+                return;
+            }
 
-                // 🌟 VALIDAÇÃO: Testa se o banco de dados conseguiu conectar em modo ONLINE
+            // Captura o status da rede de forma segura
+            let bancoEstaOnline = false;
+            try {
                 const statusRedeBanco = await ipcRenderer.invoke('verificar-status-rede-banco');
-                if (!statusRedeBanco.isOnline) {
-                    const divErroLogin = document.getElementById('erroLogin');
-                    if (divErroLogin) {
-                        divErroLogin.innerHTML = `
-                            <div style="text-align: left; font-size: 14px; line-height: 1.4;">
-                                <span style="font-size: 15px; color: #721c24;">🛑 <strong>Parâmetros do PostgreSQL Inválidos ou Ausentes!</strong></span><br>
-                                <span style="font-size: 12px; color: #666;">Configuração de conexão central exigida para sincronização.</span><br><br>
-                                
-                                <div class="form-group" style="margin-bottom: 8px;">
-                                    <label style="font-size: 12px; margin-bottom: 2px;">Servidor IP (Host):</label>
-                                    <input type="text" id="cfgHost" value="localhost" style="padding: 6px; font-size: 14px;">
-                                </div>
-                                <div style="display: flex; gap: 10px; margin-bottom: 8px;">
-                                    <div style="flex: 2;">
-                                        <label style="font-size: 12px; margin-bottom: 2px;">Nome do Banco:</label>
-                                        <input type="text" id="cfgDatabase" value="sysloja" style="padding: 6px; font-size: 14px;">
-                                    </div>
-                                    <div style="flex: 1;">
-                                        <label style="font-size: 12px; margin-bottom: 2px;">Porta:</label>
-                                        <input type="number" id="cfgPort" value="5432" style="padding: 6px; font-size: 14px;">
-                                    </div>
-                                </div>
-                                <div class="form-group" style="margin-bottom: 8px;">
-                                    <label style="font-size: 12px; margin-bottom: 2px;">Usuário:</label>
-                                    <input type="text" id="cfgUser" value="admloja" style="padding: 6px; font-size: 14px;">
-                                </div>
-                                <div class="form-group" style="margin-bottom: 12px;">
-                                    <label style="font-size: 12px; margin-bottom: 2px;">Senha do Banco:</label>
-                                    <input type="password" id="cfgPassword" placeholder="Digite a senha" style="padding: 6px; font-size: 14px;">
-                                </div>
-                                
-                                <button id="btnSalvarPostgresManual" style="margin-top: 0; padding: 12px; font-size: 15px; background-color: #6f42c1;">Gravar Parâmetros e Conectar</button>
-                            </div>
-                        `;
-                        divErroLogin.style.display = 'block';
-                        document.getElementById('btnSalvarPostgresManual').addEventListener('click', executarGravacaoManualPostgres);
-                    }
-                    
-                    const btnLogar = document.getElementById('btnLogar');
-                    if (btnLogar) btnLogar.style.display = 'none';
-                    return;
-                }
+                bancoEstaOnline = !!(statusRedeBanco && statusRedeBanco.isOnline);
+                console.log("📡 [BOOT-FRONT] Estado inicial do Postgres central:", bancoEstaOnline ? "ONLINE" : "OFFLINE");
+            } catch (err) {
+                console.error("Erro ao checar status de rede do banco:", err);
+            }
 
-                // Se o banco estiver online e o caixa configurado, prossegue com o fluxo normal
+            try {
+                console.log("🔍 [BOOT-FRONT] Invocando carregamento de dados do caixa...");
                 const resposta = await ipcRenderer.invoke('carregar-caixa', caixaIdDaMaquina);
+                console.log("📦 [BOOT-FRONT] Retorno do carregar-caixa:", resposta);
                 
-                if (resposta.status === 'sucesso') {
-                    document.getElementById('caixaId').value = resposta.dados.id;
-                    document.getElementById('caixaDescricao').value = resposta.dados.descricao;
+                if (resposta && resposta.status === 'sucesso') {
+                    if (document.getElementById('caixaId')) document.getElementById('caixaId').value = resposta.dados.id;
+                    if (document.getElementById('caixaDescricao')) document.getElementById('caixaDescricao').value = resposta.dados.descricao;
+
+                    // Alimenta as variáveis globais de tenant na janela
+                    window.tenantEmpresaId = resposta.dados.empresa_id;
+                    window.tenantFilialId = resposta.dados.filial_id;
                     
-                    // CONFIGURAÇÃO DE LOGIN AUTOMÁTICO
+                    if (document.getElementById('navCaixaDescricao')) document.getElementById('navCaixaDescricao').innerText = resposta.dados.descricao;
+                    if (document.getElementById('navEmpresaNome')) document.getElementById('navEmpresaNome').innerText = resposta.dados.empresa_nome || "Grupo Alfa Varejo"; 
+                    if (document.getElementById('navFilialNome')) document.getElementById('navFilialNome').innerText = resposta.dados.filial_nome || "Alfa Matriz";
+                    
+                    const badgeRede = document.getElementById('badgeRede');
+                    if (badgeRede) {
+                        badgeRede.className = bancoEstaOnline ? 'badge-online' : 'msg-box offline';
+                        badgeRede.innerText = bancoEstaOnline ? 'ONLINE' : 'OFFLINE';
+                    }
+                                    
+                    // 🤖 PROCESSAMENTO DO LOGIN AUTOMÁTICO
+                    console.log("📖 [BOOT-FRONT] Buscando lembrete de login no config.json...");
                     const loginAuto = await ipcRenderer.invoke('obter-lembrete-login');
-                    if (loginAuto.status === 'sucesso') {
-                        document.getElementById('loginUsuario').value = loginAuto.usuario;
-                        document.getElementById('lembrarSenha').checked = true;
+                    console.log("📖 [BOOT-FRONT] Retorno do obter-lembrete-login:", loginAuto);
+                    
+                    if (loginAuto && loginAuto.status === 'sucesso') {
+                        console.log(`🚀 [BOOT-FRONT] Credenciais encontradas para o usuário "${loginAuto.usuario}". Disparando bypass...`);
                         
+                        if (document.getElementById('loginUsuario')) document.getElementById('loginUsuario').value = loginAuto.usuario;
+                        if (document.getElementById('lembrarSenha')) document.getElementById('lembrarSenha').checked = true;
+                        
+                        // Envia para a validação do processo Main (Garante a propriedade 'senha' esperada)
                         const respostaAuto = await ipcRenderer.invoke('tentar-login', { 
                             usuario: loginAuto.usuario, 
                             senha: loginAuto.senhaHash, 
                             caixaId: resposta.dados.id 
                         });
 
-                        if (respostaAuto.status === 'sucesso') {
+                        console.log("🔑 [BOOT-FRONT] Resposta do tentar-login automático:", respostaAuto);
+
+                        if (respostaAuto && respostaAuto.status === 'sucesso') {
                             window.operadorLogado = respostaAuto.operador;
-                            document.getElementById('operadorId').value = respostaAuto.operador.id;
-                            // 🌟 CORREÇÃO REALIZADA AQUI: Removido o erro de sintaxe 'whitespaces'
-                            document.getElementById('operadorNome').value = respostaAuto.operador.nome;
+                            if (document.getElementById('operadorId')) document.getElementById('operadorId').value = respostaAuto.operador.id;
+                            if (document.getElementById('navOperadorNome')) document.getElementById('navOperadorNome').innerText = respostaAuto.operador.nome;
                             
                             const ehAdmin = respostaAuto.operador.role === 'admin' || respostaAuto.operador.usuario === 'admin';
-                            const botaoHistoricoClassico = document.getElementById('btnVerHistorico');
-                            if (botaoHistoricoClassico) {
-                                botaoHistoricoClassico.style.display = ehAdmin ? 'block' : 'none';
+                            if (document.getElementById('btnVerHistorico')) {
+                                document.getElementById('btnVerHistorico').style.display = ehAdmin ? 'block' : 'none';
                             }
-
-                            const botaoSyncMenu = document.getElementById('btnVerSincronizacao');
-                            if (botaoSyncMenu) botaoSyncMenu.style.display = ehAdmin ? 'block' : 'none';
+                            if (document.getElementById('btnVerSincronizacao')) {
+                                document.getElementById('btnVerSincronizacao').style.display = ehAdmin ? 'block' : 'none';
+                            }
 
                             const caixaEstaAberto = await ipcRenderer.invoke('verificar-caixa-aberto', resposta.dados.id);
-                            document.getElementById('telaLogin').style.display = 'none';
+                            if (document.getElementById('telaLogin')) document.getElementById('telaLogin').style.display = 'none';
 
                             if (caixaEstaAberto) {
-                                document.getElementById('telaCaixa').style.display = 'block';
+                                if (document.getElementById('navbarStatus')) document.getElementById('navbarStatus').style.display = 'flex';
+                                if (document.getElementById('telaCaixa')) document.getElementById('telaCaixa').style.display = 'block';
                                 await atualizarTabelaLancamentosJanela();
-                                document.getElementById('origem').focus();
+                                if (document.getElementById('origem')) document.getElementById('origem').focus();
                             } else {
-                                document.getElementById('telaAbertura').style.display = 'block';
-                                document.getElementById('valorAbertura').focus();
-                                document.getElementById('valorAbertura').select();
+                                if (document.getElementById('telaAbertura')) document.getElementById('telaAbertura').style.display = 'block';
+                                if (document.getElementById('valorAbertura')) {
+                                    document.getElementById('valorAbertura').focus();
+                                    document.getElementById('valorAbertura').select();
+                                }
                             }
                         } else {
-                            document.getElementById('loginUsuario').value = '';
-                            document.getElementById('lembrarSenha').checked = false;
-                            document.getElementById('loginUsuario').focus();
+                            console.log("⚠️ [BOOT-FRONT] Falha na validação do login automático. Exibindo tela limpa.");
+                            resgatarLoginManual();
                         }
+                    } else {
+                        console.log("ℹ️ [BOOT-FRONT] Sem login automático agendado. Aguardando operador.");
                     }
                 } else {
-                    // Se o caixaId do arquivo estiver errado/inválido
-                    const divErroLogin = document.getElementById('erroLogin');
-                    if (divErroLogin) {
-                        divErroLogin.innerHTML = `
-                            <div style="text-align: left; font-size: 14px; line-height: 1.5;">
-                                <span style="font-size: 16px;">❌ <strong>Identificação de Caixa Inválida!</strong></span><br><br>
-                                O ID atual não foi encontrado na base ou está bloqueado.<br>
-                                <strong>Retorno:</strong> ${resposta.mensagem}<br><br>
-                                Insira um novo ID válido abaixo para reconfigurar:<br><br>
-                                <div style="display: flex; gap: 8px; margin-bottom: 12px;">
-                                    <input type="text" id="inputManualCaixaId" placeholder="Cole o novo UUID do Caixa aqui" style="padding: 8px; font-size: 14px; flex: 1; border-radius: 4px; border: 1px solid #ccc; color: #333;">
-                                    <button id="btnSalvarCaixaManual" style="margin-top: 0; width: auto; padding: 8px 15px; font-size: 14px; background-color: #28a745;">Gravar</button>
-                                </div>
-                            </div>
-                        `;
-                        divErroLogin.style.display = 'block';
-                        document.getElementById('btnSalvarCaixaManual').addEventListener('click', executarGravacaoManualCaixa);
-                    }
-                    
-                    const btnLogar = document.getElementById('btnLogar');
-                    if (btnLogar) btnLogar.style.display = 'none';
+                    exibirErroCaixaInvalido(resposta ? resposta.mensagem : "Erro desconhecido");
                 }
             } catch (err) {
-                console.error(`🚫 Erro ao identificar a máquina: ${err.message}`);
-                ipcRenderer.send('fechar-aplicativo');
+                console.error("❌ [BOOT-FRONT] Erro crítico no fluxo de renderização:", err.message);
             }
         });
+
+        function resgatarLoginManual() {
+            if (document.getElementById('loginUsuario')) document.getElementById('loginUsuario').value = '';
+            if (document.getElementById('lembrarSenha')) document.getElementById('lembrarSenha').checked = false;
+            if (document.getElementById('loginUsuario')) document.getElementById('loginUsuario').focus();
+        }
+
+        function exibirErroTerminalNaoConfigurado() {
+            const divErroLogin = document.getElementById('erroLogin');
+            if (divErroLogin) {
+                divErroLogin.innerHTML = `
+                    <div style="text-align: left; font-size: 14px; line-height: 1.5;">
+                        <span style="font-size: 16px;">🖥️ <strong>Terminal Não Configurado!</strong></span><br><br>
+                        Insira o ID deste caixa abaixo para registrar este computador.<br><br>
+                        <div style="display: flex; gap: 8px; margin-bottom: 12px;">
+                            <input type="text" id="inputManualCaixaId" placeholder="Cole o UUID do Caixa aqui" style="padding: 8px; font-size: 14px; flex: 1; border-radius: 4px; border: 1px solid #ccc; color: #333;">
+                            <button id="btnSalvarCaixaManual" style="margin-top: 0; width: auto; padding: 8px 15px; font-size: 14px; background-color: #28a745;">Gravar</button>
+                        </div>
+                    </div>
+                `;
+                divErroLogin.style.display = 'block';
+                document.getElementById('btnSalvarCaixaManual').addEventListener('click', executarGravacaoManualCaixa);
+            }
+            if (document.getElementById('btnLogar')) document.getElementById('btnLogar').style.display = 'none';
+        }
+
+        function exibirErroCaixaInvalido(mensagemErro) {
+            const divErroLogin = document.getElementById('erroLogin');
+            if (divErroLogin) {
+                divErroLogin.innerHTML = `
+                    <div style="text-align: left; font-size: 14px; line-height: 1.5;">
+                        <span style="font-size: 16px;">❌ <strong>Identificação de Caixa Inválida!</strong></span><br><br>
+                        O ID atual não foi encontrado na base ou está bloqueado.<br>
+                        <strong>Retorno:</strong> ${mensagemErro}<br><br>
+                        Insira um novo ID válido abaixo para reconfigurar:<br><br>
+                        <div style="display: flex; gap: 8px; margin-bottom: 12px;">
+                            <input type="text" id="inputManualCaixaId" placeholder="Cole o novo UUID do Caixa aqui" style="padding: 8px; font-size: 14px; flex: 1; border-radius: 4px; border: 1px solid #ccc; color: #333;">
+                            <button id="btnSalvarCaixaManual" style="margin-top: 0; width: auto; padding: 8px 15px; font-size: 14px; background-color: #28a745;">Gravar</button>
+                        </div>
+                    </div>
+                `;
+                divErroLogin.style.display = 'block';
+                document.getElementById('btnSalvarCaixaManual').addEventListener('click', executarGravacaoManualCaixa);
+            }
+            if (document.getElementById('btnLogar')) document.getElementById('btnLogar').style.display = 'none';
+        }
 
         // 🌟 NOVO: Função que processa e grava os parâmetros relacionais do Postgres com timer de 10s
         async function executarGravacaoManualPostgres() {
@@ -667,12 +747,12 @@
             const usuario = campoUsuario.value.trim();
             const senha = campoSenha.value;
 
-            // 🛠️ CORREÇÃO: Captura o caixaId que o sistema buscou automaticamente na inicialização da máquina
+            // Captura o caixaId armazenado no input oculto da página
             const caixaId = document.getElementById('caixaId').value;
 
             divErroLogin.style.display = 'none';
 
-            if(!usuario || !senha) {
+            if (!usuario || !senha) {
                 divErroLogin.innerText = "⚠️ Preencha o usuário e a senha!";
                 divErroLogin.style.display = 'block';
                 campoUsuario.focus();
@@ -680,60 +760,68 @@
             }
 
             try {
-                // Modificado para passar um parâmetro indicando que não precisa re-criptografar se já vier automatizado
-                const resposta = await ipcRenderer.invoke('tentar-login', { usuario, senha, caixaId });
+                const respostaAuth = await ipcRenderer.invoke('tentar-login', { usuario, senha, caixaId });
 
-                if (resposta.status === 'sucesso') {
-                    window.operadorLogado = resposta.operador; //
+                if (respostaAuth.status === 'sucesso') {
+                    window.operadorLogado = respostaAuth.operador;
 
-                    document.getElementById('operadorId').value = resposta.operador.id; //
-                    document.getElementById('operadorNome').value = resposta.operador.nome; //
+                    document.getElementById('operadorId').value = respostaAuth.operador.id;
                     
-                    // =====================================================================
-                    // 🛡️ REGRAS VISUAIS DE ADMIN (SEM MENU LATERAL): Oculta o botão se não for Administrador
-                    // =====================================================================
-                    const ehAdmin = resposta.operador.role === 'admin' || resposta.operador.usuario === 'admin';
+                    const ehAdmin = respostaAuth.operador.role === 'admin' || respostaAuth.operador.usuario === 'admin';
                     const botaoHistoricoClassico = document.getElementById('btnVerHistorico');
-                    
                     if (botaoHistoricoClassico) {
                         botaoHistoricoClassico.style.display = ehAdmin ? 'block' : 'none';
                     }
-                    // =====================================================================
 
                     const botaoSyncMenu = document.getElementById('btnVerSincronizacao');
                     if (botaoSyncMenu) botaoSyncMenu.style.display = ehAdmin ? 'block' : 'none';
 
-                    const manterConectado = document.getElementById('lembrarSenha').checked; //
+                    const manterConectado = document.getElementById('lembrarSenha').checked;
                     await ipcRenderer.invoke('salvar-lembrete-login', { 
                         usuario, 
                         senha, 
                         ativo: manterConectado 
-                    }); //
+                    });
 
-                    campoUsuario.value = ''; //
-                    campoSenha.value = ''; //
+                    campoUsuario.value = '';
+                    campoSenha.value = '';
 
-                    const caixaEstaAberto = await ipcRenderer.invoke('verificar-caixa-aberto', caixaId); //
-                    document.getElementById('telaLogin').style.display = 'none'; //
+                    // 🌟 CORREÇÃO: Busca os dados reais e amigáveis do caixa para a Navbar
+                    const dadosCaixa = await ipcRenderer.invoke('carregar-caixa', caixaId);
+                    const caixaEstaAberto = await ipcRenderer.invoke('verificar-caixa-aberto', caixaId);
+                    
+                    document.getElementById('telaLogin').style.display = 'none';
 
-                    if (caixaEstaAberto) { //
-                        document.getElementById('telaCaixa').style.display = 'block'; //
-                        await atualizarTabelaLancamentosJanela(); //
-                        document.getElementById('origem').focus(); //
+                    if (caixaEstaAberto) {
+                        // Exibe a barra superior e a tela de vendas
+                        document.getElementById('navbarStatus').style.display = 'flex';
+                        document.getElementById('telaCaixa').style.display = 'block';
+                        
+                        // Alimenta a barra superior com os dados corretos
+                        document.getElementById('navOperadorNome').innerText = window.operadorLogado.nome;
+                        if (dadosCaixa.status === 'sucesso') {
+                            document.getElementById('navCaixaDescricao').innerText = dadosCaixa.dados.descricao;
+                            document.getElementById('navEmpresaNome').innerText = dadosCaixa.dados.empresa_nome || "Alfa Matriz"; 
+                            document.getElementById('navFilialNome').innerText = dadosCaixa.dados.filial_nome || "Moda Minas Conf.";
+                        }
+
+                        await atualizarTabelaLancamentosJanela();
+                        document.getElementById('origem').focus();
                     } else {
-                        document.getElementById('telaAbertura').style.display = 'block'; //
-                        document.getElementById('valorAbertura').focus(); //
-                        document.getElementById('valorAbertura').select(); //
+                        document.getElementById('navbarStatus').style.display = 'none';
+                        document.getElementById('telaAbertura').style.display = 'block';
+                        document.getElementById('valorAbertura').focus();
+                        document.getElementById('valorAbertura').select();
                     }
                 } else {
-                    divErroLogin.innerText = `❌ ${resposta.mensagem}`;
+                    divErroLogin.innerText = `❌ ${respostaAuth.mensagem}`;
                     divErroLogin.style.display = 'block';
                     campoSenha.value = '';
                     campoUsuario.focus();
                 }
             } catch (err) {
                 console.error(err);
-                divErroLogin.innerText = "❌ Erro ao processar o login.";
+                divErroLogin.innerText = "❌ Erro ao processar o login devido a uma falha interna.";
                 divErroLogin.style.display = 'block';
             }
         });
@@ -887,22 +975,42 @@
 
         // 4. Botão de Logout
         //document.getElementById('btnSair').addEventListener('click', () => {
+        // 4. Botão de Logout (CORRIGIDO: Restaura perfeitamente o estado da tela de login)
         document.getElementById('btnSair').addEventListener('click', async () => {
-            // Apaga as credenciais salvas do arquivo para que o próximo precise digitar
-            await ipcRenderer.invoke('salvar-lembrete-login', { usuario: '', senhaHash: '', ativo: false });
-            document.getElementById('lembrarSenha').checked = false;
+            // 🌟 1. Oculta a barra de status superior corporativa
+            document.getElementById('navbarStatus').style.display = 'none';
+            
+            // 🌟 2. Oculta todos os painéis operacionais do sistema
+            document.getElementById('telaCaixa').style.display = 'none';
+            document.getElementById('telaAbertura').style.display = 'none';
+            document.getElementById('telaFechamento').style.display = 'none';
+            document.getElementById('telaHistorico').style.display = 'none';
+            document.getElementById('telaSincronizacao').style.display = 'none';
+            
+            // 🌟 3. Limpa os estados de erro e logs antigos das caixas de mensagem
             document.getElementById('erroLogin').style.display = 'none';
+            document.getElementById('erroLogin').innerText = '';
             document.getElementById('statusLog').style.display = 'none';
+            document.getElementById('statusLog').innerText = '';
+            
+            // 🌟 4. Limpa as variáveis e inputs de sessão em memória do operador que saiu
             document.getElementById('descricaoMovimento').value = '';
             document.getElementById('total').value = '0.00';
             document.getElementById('operadorId').value = '';
-            document.getElementById('operadorNome').value = '';
+            document.getElementById('loginSenha').value = '';
+            window.operadorLogado = null;
             
-            document.getElementById('telaCaixa').style.display = 'none';
-            document.getElementById('telaAbertura').style.display = 'none'; // Garante que limpa a abertura se estivesse nela
+            // 🌟 5. Remove as credenciais automáticas do config.json para forçar nova digitação
+            await ipcRenderer.invoke('salvar-lembrete-login', { usuario: '', senhaHash: '', ativo: false });
+            document.getElementById('lembrarSenha').checked = false;
+            
+            // 🌟 6. Torna a tela de Login visível novamente e joga o foco no campo de Usuário
             document.getElementById('telaLogin').style.display = 'block';
+            document.getElementById('loginUsuario').value = '';
             
-            setTimeout(() => { document.getElementById('loginUsuario').focus(); }, 50);
+            setTimeout(() => { 
+                document.getElementById('loginUsuario').focus(); 
+            }, 50);
         });
 
         //Fechamento de Caixa
