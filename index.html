@@ -357,6 +357,16 @@
             </select>
         </div>
 
+        <div class="form-group" style="position: relative;">
+            <label for="buscaCliente">Cliente / Consumidor:</label>
+            <input type="text" id="buscaCliente" placeholder="🔍 Digite o Nome ou CPF do Cliente..." autocomplete="off">
+            <input type="hidden" id="clienteSelecionadoId" value="00000000-0000-0000-0000-000000000000">
+            
+            <div id="sugestoesCliente" style="display: none; position: absolute; width: 100%; background: white; border: 1px solid #ccc; border-radius: 4px; z-index: 2000; box-shadow: 0 4px 8px rgba(0,0,0,0.15); max-height: 200px; overflow-y: auto; box-sizing: border-box;"></div>
+            
+            <div id="alertaClienteBloqueado" style="display: none; margin-top: 10px; padding: 10px 14px; background-color: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; border-radius: 4px; font-size: 13px; font-weight: bold; line-height: 1.4;"></div>
+        </div>
+        
         <div class="form-group">
             <label for="formaPagamento">Forma de Pagamento:</label>
             <select id="formaPagamento">
@@ -398,6 +408,9 @@
             <label for="total">Valor Total (R$):</label>
             <input type="number" id="total" class="campo-total" min="0.01" step="0.01" value="0.00">
         </div>
+
+        <div id="statusLog" class="msg-box"></div>
+
         <button id="btnRegistrar">Lançar no Caixa</button>
 
         <button id="btnToggleLancamentos" style="background-color: #6c757d; margin-top: 25px; padding: 10px; font-size: 14px; width: auto; display: block; margin-left: auto; margin-right: auto;">📋 Ver Lançamentos do Turno</button>
@@ -434,8 +447,6 @@
         <button id="btnVerSincronizacao" style="background-color: #6f42c1; margin-bottom: 10px; display: none;">🔄 Painel de Sincronização Manual</button>
 
         <button id="btnSair" class="btn-logout">Trocar de Operador (Sair)</button>
-
-        <div id="statusLog" class="msg-box"></div>
     </div>
 
     <div id="modalExclusao" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); align-items: center; justify-content: center; z-index: 9999;">
@@ -893,13 +904,53 @@
         });
 
         // 3. Registrar Lançamento de Venda
+        // 3. Registrar Lançamento de Venda (VALIDADO COM TRAVA DE CLIENTE BLOQUEADO)
+        // 3. Registrar Lançamento de Venda (VALIDADO COM REALCE VISUAL E TIMER DE 10 SEGUNDOS)
         document.getElementById('btnRegistrar').addEventListener('click', async () => {
             const statusDiv = document.getElementById('statusLog');
+            const cardAlertaBloqueio = document.getElementById('alertaClienteBloqueado');
             
+            const campoCliente = document.getElementById('buscaCliente');
+            const campoTotal = document.getElementById('total');
+
+            // Funçao utilitária para destacar o campo com erro e agendar o sumiço em 10 segundos
+            const aplicarDestaqueErro = (elementoCampo, mensagemErro) => {
+                statusDiv.style.display = 'block';
+                statusDiv.className = 'msg-box erro';
+                statusDiv.innerText = mensagemErro;
+
+                // 🎨 Aplica cor e borda vermelha para evidenciar o campo com problema
+                elementoCampo.style.border = '2px solid #dc3545';
+                elementoCampo.style.backgroundColor = '#f8d7da';
+                elementoCampo.focus();
+                if (typeof elementoCampo.select === 'function') elementoCampo.select();
+
+                // ⏱️ TIMER DE 10 SEGUNDOS: Desaparece a mensagem e remove o realce do campo
+                setTimeout(() => {
+                    statusDiv.style.display = 'none';
+                    statusDiv.innerText = '';
+                    
+                    // Restaura as cores originais/padrão do campo
+                    elementoCampo.style.border = '';
+                    elementoCampo.style.backgroundColor = '';
+                }, 10000); // 10.000 milissegundos = 10 segundos
+            };
+
+            // =====================================================================
+            // 🔒 TRAVA A: Cliente Bloqueado
+            // =====================================================================
+            if (cardAlertaBloqueio && cardAlertaBloqueio.style.display === 'block') {
+                aplicarDestaqueErro(
+                    campoCliente, 
+                    '⚠️ Operação Recusada: O cliente selecionado possui restrições ativas no cadastro. Não é permitido realizar lançamentos até a regularização.'
+                );
+                return; // Aborta
+            }
+
             // Captura dos campos da tela
             const caixaId = document.getElementById('caixaId').value;
             const operadorId = document.getElementById('operadorId').value;
-            const total = parseFloat(document.getElementById('total').value);
+            const total = parseFloat(campoTotal.value);
             const formaPagamento = document.getElementById('formaPagamento').value;
             const origem = document.getElementById('origem').value;
             const descricaoMovimento = document.getElementById('descricaoMovimento').value.trim();
@@ -907,7 +958,6 @@
             let bandeira = null;
             let parcelas = 1;
 
-            // 🔍 Validação silenciosa via Log
             if (!caixaId || !operadorId) {
                 statusDiv.style.display = 'block';
                 statusDiv.className = 'msg-box erro';
@@ -915,24 +965,26 @@
                 return;
             }
 
-            // Se for Crédito, pega os valores selecionados no novo painel
             if (formaPagamento === 'CC') {
                 bandeira = document.getElementById('bandeiraCartao').value;
                 parcelas = parseInt(document.getElementById('parcelasCartao').value) || 1;
                 
                 if (parcelas < 1) {
-                    statusDiv.style.display = 'block';
-                    statusDiv.className = 'msg-box erro';
-                    statusDiv.innerText = '❌ Erro: O número de parcelas deve ser pelo menos 1!';
+                    // Se der erro nas parcelas do cartão, realça o campo de parcelas
+                    aplicarDestaqueErro(document.getElementById('parcelasCartao'), '❌ Erro: O número de parcelas deve ser pelo menos 1!');
                     return;
                 }
             }
 
+            // =====================================================================
+            // 🔒 TRAVA B: Valor Total Inválido ou Zerado
+            // =====================================================================
             if (isNaN(total) || total <= 0) {
-                statusDiv.style.display = 'block';
-                statusDiv.className = 'msg-box erro';
-                statusDiv.innerText = '❌ Erro: O valor deve ser maior que zero!';
-                return;
+                aplicarDestaqueErro(
+                    campoTotal, 
+                    '❌ Erro: O valor total do lançamento deve ser maior que zero!'
+                );
+                return; // Aborta
             }
 
             statusDiv.style.display = 'block';
@@ -947,7 +999,8 @@
                 origem: origem, 
                 descricaoMovimento,
                 bandeira,
-                parcelas
+                parcelas,
+                clienteId: document.getElementById('clienteSelecionadoId').value
             });
 
             if (resposta.status === 'sucesso') {
@@ -955,9 +1008,16 @@
                 statusDiv.className = resposta.modo.includes('ONLINE') ? 'msg-box online' : 'msg-box offline';
                 
                 document.getElementById('total').value = "0.00";
+                // 🌟 ADICIONE ESSAS DUAS LINHAS AQUI PARA LIMPAR O CAMPO APÓS A VENDA
+                document.getElementById('buscaCliente').value = "";
+                document.getElementById('clienteSelecionadoId').value = "00000000-0000-0000-0000-000000000000";
                 document.getElementById('descricaoMovimento').value = "";
-                document.getElementById('painelCartaoCredito').style.display = 'none'; 
-                document.getElementById('formaPagamento').value = "DN"; 
+                document.getElementById('painelCartaoCredito').style.display = 'none';
+                document.getElementById('formaPagamento').value = "DN";
+                document.getElementById('origem').value = "E";
+                // 🌟 ADICIONADO: Limpa o card de aviso ao finalizar a venda com sucesso
+                document.getElementById('alertaClienteBloqueado').style.display = 'none';
+                document.getElementById('alertaClienteBloqueado').innerText = '';
                 
                 await atualizarTabelaLancamentosJanela();
                 document.getElementById('origem').focus();
@@ -1007,6 +1067,10 @@
             // 🌟 6. Torna a tela de Login visível novamente e joga o foco no campo de Usuário
             document.getElementById('telaLogin').style.display = 'block';
             document.getElementById('loginUsuario').value = '';
+
+            // No evento do btnSair adicione esta linha junto com os outros resets de tela:
+            document.getElementById('alertaClienteBloqueado').style.display = 'none';
+            document.getElementById('alertaClienteBloqueado').innerText = '';
             
             setTimeout(() => { 
                 document.getElementById('loginUsuario').focus(); 
@@ -1751,6 +1815,143 @@
             const caixaConsole = document.getElementById('consoleLogSync');
             if (caixaConsole) caixaConsole.innerHTML = mensagemInicial;
         }
+
+        // 🔍 LÓGICA DE AUTOCOMPLETE DINÂMICO DE CLIENTES (COM SUPORTE A NAVEGAÇÃO VIA TECLADO)
+        const inputBuscaCliente = document.getElementById('buscaCliente');
+        const divSugestoes = document.getElementById('sugestoesCliente');
+        const hiddenClienteId = document.getElementById('clienteSelecionadoId');
+        const cardAlertaBloqueio = document.getElementById('alertaClienteBloqueado');
+        
+        let indiceClienteFocado = -1; // 🌟 Controla qual linha está selecionada via teclado
+
+        // Função isolada para processar a escolha e fixação do cliente na tela
+        function selecionarClienteManual(cliente) {
+            inputBuscaCliente.value = cliente.nome;
+            hiddenClienteId.value = cliente.id;
+            divSugestoes.style.display = 'none';
+            indiceClienteFocado = -1;
+
+            // Alerta visual de bloqueio integrado
+            if (cliente.bloqueado === 'S') {
+                cardAlertaBloqueio.innerHTML = `🛑 <strong>Cliente Bloqueado:</strong> A inadimplência ou restrição ativa de "${cliente.nome}" impede a aprovação de novos faturamentos e vendas a prazo.`;
+                cardAlertaBloqueio.style.display = 'block';
+            } else {
+                cardAlertaBloqueio.style.display = 'none';
+                cardAlertaBloqueio.innerText = '';
+            }
+        }
+
+        // Realça visualmente a linha selecionada pelas setas do teclado
+        function destacarLinhaTeclado(itens) {
+            if (!itens || itens.length === 0) return;
+
+            // Limpa o realce de todas as linhas do autocomplete antes
+            Array.from(itens).forEach(item => {
+                item.style.backgroundColor = 'transparent';
+            });
+
+            // Se o índice for válido, aplica o fundo de seleção (fundo cinza azulado)
+            if (indiceClienteFocado >= 0 && indiceClienteFocado < itens.length) {
+                const itemAlvo = itens[indiceClienteFocado];
+                itemAlvo.style.backgroundColor = '#dee2e6';
+                
+                // Garante que o scroll acompanhe a seleção se a lista for grande
+                itemAlvo.scrollIntoView({ block: 'nearest' });
+            }
+        }
+
+        inputBuscaCliente.addEventListener('input', async () => {
+            const termo = inputBuscaCliente.value.trim();
+            if (termo.length < 2) { divSugestoes.style.display = 'none'; indiceClienteFocado = -1; return; }
+
+            const clientes = await ipcRenderer.invoke('buscar-clientes-pdv', termo);
+            divSugestoes.innerHTML = '';
+            indiceClienteFocado = -1; // Reseta o índice a cada nova busca
+
+            if (clientes.length === 0) {
+                divSugestoes.innerHTML = `<div style="padding: 10px; color: #888; font-style: italic; font-size: 14px;">Nenhum cliente localizado...</div>`;
+                divSugestoes.style.display = 'block';
+                return;
+            }
+
+            clientes.forEach(c => {
+                const item = document.createElement('div');
+                item.className = 'item-sugestao-cliente'; // Classe auxiliar de seletor
+                item.style.padding = '10px 12px';
+                item.style.cursor = 'pointer';
+                item.style.borderBottom = '1px solid #eee';
+                item.style.fontSize = '14px';
+                
+                const tagBloqueio = c.bloqueado === 'S' ? ' <span style="color:red; font-weight:bold;">[BLOQUEADO]</span>' : '';
+                item.innerHTML = `<strong>${c.nome}</strong> - ${c.cpf || 'Sem CPF'} ${tagBloqueio}`;
+                
+                // Evento de clique físico com o mouse mantido
+                item.addEventListener('click', () => selecionarClienteManual(c));
+
+                // Efeito hover tradicional do mouse
+                item.addEventListener('mouseover', () => {
+                    Array.from(divSugestoes.children).forEach(i => i.style.backgroundColor = 'transparent');
+                    item.style.backgroundColor = '#f1f3f5';
+                });
+                item.addEventListener('mouseout', () => item.style.backgroundColor = 'transparent');
+                
+                // Vincula os metadados do objeto direto na div para resgate fácil via teclado
+                item.dadosCliente = c;
+
+                divSugestoes.appendChild(item);
+            });
+            divSugestoes.style.display = 'block';
+        });
+
+        // 🌟 NOVO INTERCEPTADOR: Captura e gerencia as teclas direcionais dentro do input de busca
+        inputBuscaCliente.addEventListener('keydown', (e) => {
+            const itensLinhas = divSugestoes.getElementsByClassName('item-sugestao-cliente');
+            
+            if (divSugestoes.style.display === 'none' || itensLinhas.length === 0) return;
+
+            if (e.key === 'ArrowDown') {
+                // Seta para Baixo
+                e.preventDefault(); // Impede o cursor de ir para o fim do texto
+                indiceClienteFocado++;
+                if (indiceClienteFocado >= itensLinhas.length) indiceClienteFocado = 0; // Volta para o primeiro
+                destacarLinhaTeclado(itensLinhas);
+            } 
+            else if (e.key === 'ArrowUp') {
+                // Seta para Cima
+                e.preventDefault();
+                indiceClienteFocado--;
+                if (indiceClienteFocado < 0) indiceClienteFocado = itensLinhas.length - 1; // Vai para o último
+                destacarLinhaTeclado(itensLinhas);
+            } 
+            else if (e.key === 'Enter') {
+                // Tecla Enter
+                if (indiceClienteFocado >= 0 && indiceClienteFocado < itensLinhas.length) {
+                    e.preventDefault(); // Evita que o Enter submeta o formulário antes da hora
+                    const itemSelecionado = itensLinhas[indiceClienteFocado];
+                    selecionarClienteManual(itemSelecionado.dadosCliente);
+                }
+            }
+            else if (e.key === 'Escape') {
+                // Tecla Esc limpa e fecha a caixa
+                divSugestoes.style.display = 'none';
+                indiceClienteFocado = -1;
+            }
+        });
+
+        document.addEventListener('click', (e) => {
+            if (e.target !== inputBuscaCliente && e.target !== divSugestoes) { divSugestoes.style.display = 'none'; indiceClienteFocado = -1; }
+        });
+
+        inputBuscaCliente.addEventListener('blur', () => {
+            setTimeout(() => {
+                if (inputBuscaCliente.value.trim() === "") {
+                    inputBuscaCliente.value = "";
+                    hiddenClienteId.value = "00000000-0000-0000-0000-000000000000";
+                    cardAlertaBloqueio.style.display = 'none';
+                    cardAlertaBloqueio.innerText = '';
+                }
+            }, 200); // Pequeno atraso para dar tempo de registrar o clique se for com mouse
+        });
     </script>
 </body>
 </html>

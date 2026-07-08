@@ -137,7 +137,6 @@ app.on('window-all-closed', () => {
 
 ipcMain.handle('efetuar-venda', async (event, dadosVenda) => {
     try {
-        // 🛠️ AJUSTADO: Extrai também bandeira e parcelas vindas do objeto enviado pelo front-end
         const { 
             caixaId, 
             operadorId, 
@@ -146,10 +145,10 @@ ipcMain.handle('efetuar-venda', async (event, dadosVenda) => {
             origem, 
             descricaoMovimento,
             bandeira,
-            parcelas 
+            parcelas,
+            clienteId // 🌟 CAPTURA DO OBJETO DO FRONT-END
         } = dadosVenda;
         
-        // 🛠️ AJUSTADO: Passa as novas variáveis para o método do database.js
         const resultado = await db.registrarVenda(
             caixaId, 
             operadorId, 
@@ -158,7 +157,8 @@ ipcMain.handle('efetuar-venda', async (event, dadosVenda) => {
             origem, 
             descricaoMovimento,
             bandeira,
-            parcelas
+            parcelas,
+            clienteId // 🌟 PASSA PARA O MÉTODO DO BANCO
         );
         
         return resultado;
@@ -182,6 +182,11 @@ ipcMain.handle('carregar-caixa', async (event, caixaId) => {
         db.sincronizarOperadores()
             .then(res => console.log(`[SYNC-AUTOMATICO] Operadores autorizados sincronizados:`, res))
             .catch(err => console.error(`[SYNC-AUTOMATICO] Falha no sync de operadores:`, err.message));
+        
+        // 🌟 NOVO: Dispara a sincronização de clientes em background
+        db.sincronizarClientes()
+            .then(res => console.log(`[SYNC-AUTOMATICO] Clientes (Global/Filial) prontos:`, res))
+            .catch(err => console.error(`[SYNC-AUTOMATICO] Falha no sync de clientes:`, err.message));
         
         // Retorna o objeto completo incluindo empresa_id e filial_id para o index.html
         return { status: 'sucesso', dados: caixa };
@@ -403,6 +408,10 @@ ipcMain.handle('atualizar-banco-config', async (event, dadosBanco) => {
         console.error("Erro ao salvar parâmetros do Postgres:", err);
         return { status: 'erro', message: err.message };
     }
+});
+
+ipcMain.handle('buscar-clientes-pdv', async (event, termo) => {
+    return await db.buscarClientesLocais(termo);
 });
 
 // 🌟 NOVO: Canal para expor ao front-end se o Postgres conseguiu inicializar online
