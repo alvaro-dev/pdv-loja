@@ -4,17 +4,31 @@ const path = require('path');
 const { app } = require('electron');
 const crypto = require('crypto');
 
-// 🌟 FUNÇÃO AUXILIAR: Gera data e hora local da máquina sem distorção de fuso horário (UTC)
+// FUNCAO AUXILIAR: Gera data e hora local da máquina sem distorcao de fuso horario (UTC)
 function obterDataHoraLocalANSI(dataBase = new Date()) {
-    const ano = dataBase.getFullYear();
-    const mes = String(dataBase.getMonth() + 1).padStart(2, '0');
-    const dia = String(dataBase.getDate()).padStart(2, '0');
-    const hora = String(dataBase.getHours()).padStart(2, '0');
-    const minuto = String(dataBase.getMinutes()).padStart(2, '0');
-    const segundo = String(dataBase.getSeconds()).padStart(2, '0');
+    try {
+        // Valida se o parametro passado e uma instancia de Date valida
+        if (!(dataBase instanceof Date) || isNaN(dataBase.getTime())) {
+            console.log("[AVISO] Parametro invalido enviado para obterDataHoraLocalANSI. Utilizando a data atual.");
+            dataBase = new Date();
+        }
 
-    // Retorna exatamente no formato "YYYY-MM-DD HH:MM:SS" (ex: 2026-07-06 20:30:41)
-    return `${ano}-${mes}-${dia} ${hora}:${minuto}:${segundo}`;
+        const ano = dataBase.getFullYear();
+        const mes = String(dataBase.getMonth() + 1).padStart(2, '0');
+        const dia = String(dataBase.getDate()).padStart(2, '0');
+        const hora = String(dataBase.getHours()).padStart(2, '0');
+        const minuto = String(dataBase.getMinutes()).padStart(2, '0');
+        const segundo = String(dataBase.getSeconds()).padStart(2, '0');
+
+        // Retorna exatamente no formato "YYYY-MM-DD HH:MM:SS" (ex: 2026-07-06 20:30:41)
+        return `${ano}-${mes}-${dia} ${hora}:${minuto}:${segundo}`;
+    } catch (err) {
+        console.error("[ERRO CRITICO - obterDataHoraLocalANSI]: Falha ao processar formatacao de data ANSI:", err.message);
+        
+        // Retorno de contingencia segura baseado no horario do sistema atual caso o bloco principal falhe
+        const fallback = new Date();
+        return `${fallback.getFullYear()}-${String(fallback.getMonth() + 1).padStart(2, '0')}-${String(fallback.getDate()).padStart(2, '0')} ${String(fallback.getHours()).padStart(2, '0')}:${String(fallback.getMinutes()).padStart(2, '0')}:${String(fallback.getSeconds()).padStart(2, '0')}`;
+    }
 }
 
 class DatabaseManager {
@@ -45,260 +59,365 @@ class DatabaseManager {
     }
 
     async realizarLogin(usuario, senha, caixaId) {
-        // HIGIENIZAÇÃO E CONVERSÃO ESTRITA
-        const usuarioStr = String(usuario || '').trim();
-        const senhaStr = String(senha || '').trim();
-        const caixaIdStr = caixaId ? String(caixaId).trim() : null;
-        
-        console.log(`\n[DB-LOGIN] Entrando na verificação do banco...`);
-        //console.log(`Recebido -> Usuário: "${usuarioStr}" | Senha original: "${senhaStr}"`);
-
-        // 🔒 Verifica se já é o hash de 64 caracteres ou texto puro
-        const senhaCriptografada = (senhaStr.length === 64) 
-            ? senhaStr 
-            : this.gerarHashSenha(senhaStr);
-        
-        //console.log(`[DB-LOGIN] Tratamento final da senha -> Hash SHA-256 gerado/mantido: "${senhaCriptografada}"`);
-        
-        let operador = null;
-
-        // 1. SE ESTIVER ONLINE, TENTA VALIDAR NO POSTGRESQL
-        if (this.isOnline) {
-            try {
-                console.log(`[DB-LOGIN] Buscando usuário no PostgreSQL externo...`);
-                const query = "SELECT id, usuario, nome, role, bloqueado, trocar_senha_prox_login FROM usuarios WHERE usuario = $1 AND senha = $2 AND usuario_pdv = 'S' AND deletado = false";
-                const resultado = await this.pgClient.query(query, [usuarioStr, senhaCriptografada]);
-                
-                if (resultado.rows.length > 0) {
-                    operador = resultado.rows[0];
-                    console.log(`[DB-LOGIN] Localizado no Postgres!`);
-                    
-                    // Sincroniza na base local
-                    this.sqliteDb.run(
-                        `INSERT INTO usuarios_locais (id, usuario, nome, senha, role, bloqueado, usuario_pdv, trocar_senha_prox_login) 
-                        VALUES (?, ?, ?, ?, ?, 'N', 'S', ?) 
-                        ON CONFLICT(usuario) DO UPDATE SET nome=?, senha=?, role=?, trocar_senha_prox_login=?`,
-                        [operador.id, operador.usuario, operador.nome, senhaCriptografada, operador.role, operador.trocar_senha_prox_login, operador.nome, senhaCriptografada, operador.role, operador.trocar_senha_prox_login]
-                    );
-                } else {
-                    console.log(`[DB-LOGIN] Combinação usuário/senha não encontrada no Postgres.`);
-                }
-            } catch (err) {
-                console.log("Erro no login do Postgres, tentando SQLite...", err);
-                this.isOnline = false;
-            }
-        }
-
-        // 2. MODO OFFLINE DE CONTINGÊNCIA
-        if (!operador) {
-            operador = await new Promise((resolve, reject) => {
-                const query = "SELECT id, usuario, nome, role, bloqueado FROM usuarios_locais WHERE usuario = ? AND senha = ? AND usuario_pdv = 'S' AND deletado = 0";
-                this.sqliteDb.get(query, [usuarioStr, senhaCriptografada], (err, row) => {
-                    if (err) reject(err);
-                    else resolve(row || null);
-                });
-            });
-        }
-
-        if (!operador) return null; 
-
-        // =====================================================================
-        // 🌟 EXCEÇÃO MASTER ANTECIPADA: Admins pulam qualquer trava de turno!
-        // =====================================================================
-        if (operador.role === 'admin' || operador.usuario === 'admin') {
-            //console.logconsole.log(`[LOGIN] Administrador "${operador.nome}" autenticado com sucesso.`);
-            return operador;
-        }
-
-        // =====================================================================
-        // 3. TRAVA A: Verifica se o terminal atual pertence a outro operador
-        // =====================================================================
-        if (caixaIdStr) {
-            let caixaDono = null;
+        try {
+            // HIGIENIZAÇÃO E CONVERSÃO ESTRITA
+            const usuarioStr = String(usuario || '').trim();
+            const senhaStr = String(senha || '').trim();
+            const caixaIdStr = caixaId ? String(caixaId).trim() : null;
             
+            console.log("[DB-LOGIN] Entrando na verificacao do banco...");
+
+            // Verifica se já é o hash de 64 caracteres ou texto puro
+            let senhaCriptografada = "";
+            try {
+                senhaCriptografada = (senhaStr.length === 64) 
+                    ? senhaStr 
+                    : this.gerarHashSenha(senhaStr);
+            } catch (errHash) {
+                console.error("[ERRO - realizarLogin (Geracao Hash)]: Falha ao processar a criptografia da senha:", errHash.message);
+                throw new Error("Falha interna de seguranca ao processar credenciais.");
+            }
+            
+            let operador = null;
+
+            // 1. SE ESTIVER ONLINE, TENTA VALIDAR NO POSTGRESQL
             if (this.isOnline) {
                 try {
-                    const queryCaixa = `
-                        SELECT m.operador_abertura_id, o.nome AS dono_nome 
+                    console.log("[DB-LOGIN] Buscando usuario no PostgreSQL externo...");
+                    const query = "SELECT id, usuario, nome, role, bloqueado, trocar_senha_prox_login FROM usuarios WHERE usuario = $1 AND senha = $2 AND usuario_pdv = 'S' AND deletado = false";
+                    const resultado = await this.pgClient.query(query, [usuarioStr, senhaCriptografada]);
+                    
+                    if (resultado.rows.length > 0) {
+                        operador = resultado.rows[0];
+                        console.log("[DB-LOGIN] Localizado no Postgres com sucesso.");
+                        
+                        // Sincroniza na base local de contingência de forma assíncrona
+                        this.sqliteDb.run(
+                            `INSERT INTO usuarios_locais (id, usuario, nome, senha, role, bloqueado, usuario_pdv, trocar_senha_prox_login) 
+                            VALUES (?, ?, ?, ?, ?, 'N', 'S', ?) 
+                            ON CONFLICT(usuario) DO UPDATE SET nome=?, senha=?, role=?, trocar_senha_prox_login=?`,
+                            [operador.id, operador.usuario, operador.nome, senhaCriptografada, operador.role, operador.trocar_senha_prox_login, operador.nome, senhaCriptografada, operador.role, operador.trocar_senha_prox_login],
+                            (errSync) => {
+                                if (errSync) {
+                                    console.error("[ERRO SINC - realizarLogin]: Falha ao espelhar operador no SQLite local:", errSync.message);
+                                }
+                            }
+                        );
+                    } else {
+                        console.log("[DB-LOGIN] Combinacao usuario/senha nao encontrada no Postgres.");
+                    }
+                } catch (err) {
+                    console.error("[ERRO - realizarLogin (Postgres)]: Conexao perdida ou rejeitada pelo servidor remoto:", err.message);
+                    this.isOnline = false;
+                }
+            }
+
+            // 2. MODO OFFLINE DE CONTINGÊNCIA
+            if (!operador) {
+                try {
+                    console.log("[DB-LOGIN] Buscando usuario na base de contingencia SQLite...");
+                    operador = await new Promise((resolve, reject) => {
+                        const query = "SELECT id, usuario, nome, role, bloqueado FROM usuarios_locais WHERE usuario = ? AND senha = ? AND usuario_pdv = 'S' AND deletado = 0";
+                        this.sqliteDb.get(query, [usuarioStr, senhaCriptografada], (err, row) => {
+                            if (err) reject(err);
+                            else resolve(row || null);
+                        });
+                    });
+                } catch (errSqlite) {
+                    console.error("[ERRO - realizarLogin (SQLite)]: Erro critico ao consultar tabela usuarios_locais:", errSqlite.message);
+                    throw new Error("Base de dados local inacessivel.");
+                }
+            }
+
+            if (!operador) {
+                console.log("[DB-LOGIN] Autenticacao recusada: Operador nao localizado nas bases.");
+                return null;
+            }
+
+            // =====================================================================
+            // EXCEÇÃO MASTER ANTECIPADA: Admins pulam qualquer trava de turno!
+            // =====================================================================
+            if (operador.role === 'admin' || operador.usuario === 'admin') {
+                console.log(`[LOGIN] Administrador master "${operador.nome}" autenticado com sucesso.`);
+                return operador;
+            }
+
+            // =====================================================================
+            // 3. TRAVA A: Verifica se o terminal atual pertence a outro operador
+            // =====================================================================
+            if (caixaIdStr) {
+                let caixaDono = null;
+                
+                if (this.isOnline) {
+                    try {
+                        console.log("[DB-LOGIN (TRAVA A)]: Verificando propriedade do caixa no Postgres...");
+                        const queryCaixa = `
+                            SELECT m.operador_abertura_id, o.nome AS dono_nome 
+                            FROM movimentos_caixa m
+                            JOIN usuarios o ON o.id = m.operador_abertura_id AND o.deletado = false
+                            WHERE m.caixa_id = $1::uuid AND m.status = 'A' AND m.deletado = false
+                            LIMIT 1
+                        `;
+                        const resCaixa = await this.pgClient.query(queryCaixa, [caixaIdStr]);
+                        if (resCaixa.rows.length > 0) {
+                            caixaDono = resCaixa.rows[0];
+                        }
+                    } catch (err) { 
+                        console.error("[ERRO - realizarLogin (Trava A Postgres)]:", err.message);
+                        this.isOnline = false; 
+                    }
+                }
+
+                if (!this.isOnline) {
+                    try {
+                        console.log("[DB-LOGIN (TRAVA A)]: Verificando propriedade do caixa no SQLite local...");
+                        caixaDono = await new Promise((resolve, reject) => {
+                            this.sqliteDb.get(
+                                `SELECT m.operador_abertura_id, 'Outro Operador (Offline)' AS dono_nome 
+                                FROM movimentos_caixa_locais m 
+                                WHERE m.caixa_id = ? AND m.status = 'A' AND m.deletado = 0`,
+                                [caixaIdStr], (err, row) => {
+                                    if (err) reject(err);
+                                    else resolve(row || null);
+                                }
+                            );
+                        });
+                    } catch (errLiteCaixa) {
+                        console.error("[ERRO - realizarLogin (Trava A SQLite)]:", errLiteCaixa.message);
+                    }
+                }
+
+                if (caixaDono && caixaDono.operador_abertura_id !== operador.id) {
+                    console.log(`[DB-LOGIN (REJEITADO)]: Bloqueio de terminal ativo por outro operador: "${caixaDono.dono_nome}"`);
+                    throw new Error(`Este terminal ja possui um turno ativo do operador: "${caixaDono.dono_nome}". Finalize o turno atual antes de trocar de operador.`);
+                }
+            }
+
+            // =====================================================================
+            // 4. TRAVA B: Verifica se este operador comum já tem outro caixa aberto
+            // =====================================================================
+            let turnoAtivo = null;
+            if (this.isOnline) {
+                try {
+                    console.log("[DB-LOGIN (TRAVA B)]: Verificando duplicidade de turno ativo no Postgres...");
+                    const queryTrava = `
+                        SELECT m.id, c.descricao AS caixa_nome, c.id AS cod_caixa
                         FROM movimentos_caixa m
-                        JOIN usuarios o ON o.id = m.operador_abertura_id AND o.deletado = false
-                        WHERE m.caixa_id = $1 AND m.status = 'A' AND m.deletado = false
+                        JOIN caixas c ON c.id = m.caixa_id AND c.deletado = false
+                        WHERE m.operador_abertura_id = $1 AND m.status = 'A' AND m.deletado = false
                         LIMIT 1
                     `;
-                    const resCaixa = await this.pgClient.query(queryCaixa, [caixaIdStr]);
-                    if (resCaixa.rows.length > 0) caixaDono = resCaixa.rows[0];
-                } catch (err) { this.isOnline = false; }
+                    const resTrava = await this.pgClient.query(queryTrava, [operador.id]);
+                    if (resTrava.rows.length > 0) {
+                        turnoAtivo = resTrava.rows[0];
+                    }
+                } catch (err) { 
+                    console.error("[ERRO - realizarLogin (Trava B Postgres)]:", err.message);
+                    this.isOnline = false; 
+                }
             }
 
             if (!this.isOnline) {
-                caixaDono = await new Promise((resolve) => {
-                    this.sqliteDb.get(
-                        `SELECT m.operador_abertura_id, 'Outro Operador (Offline)' AS dono_nome 
-                        FROM movimentos_caixa_locais m 
-                        WHERE m.caixa_id = ? AND m.status = 'A' AND m.deletado = 0`,
-                        [caixaIdStr], (err, row) => resolve(row)
-                    );
-                });
+                try {
+                    console.log("[DB-LOGIN (TRAVA B)]: Verificando duplicidade de turno ativo no SQLite local...");
+                    turnoAtivo = await new Promise((resolve, reject) => {
+                        this.sqliteDb.get(
+                            `SELECT m.id, 'outro terminal (Offline)' AS caixa_nome, c.id AS cod_caixa 
+                            FROM movimentos_caixa_locais m 
+                            JOIN caixas_locais c ON c.id = m.caixa_id AND c.deletado = 0
+                            WHERE m.operador_abertura_id = ? AND m.status = 'A' AND m.deletado = 0`,
+                            [operador.id], (err, row) => {
+                                if (err) reject(err);
+                                else resolve(row || null);
+                            }
+                        );
+                    });
+                } catch (errLiteTurno) {
+                    console.error("[ERRO - realizarLogin (Trava B SQLite)]:", errLiteTurno.message);
+                }
             }
 
-            if (caixaDono && caixaDono.operador_abertura_id !== operador.id) {
-                throw new Error(`Este terminal já possui um turno ativo do operador: "${caixaDono.dono_nome}". Finalize o turno atual antes de trocar de operador.`);
+            if (turnoAtivo) {
+                if (String(turnoAtivo.cod_caixa).trim() !== caixaIdStr) {
+                    console.log(`[DB-LOGIN (REJEITADO)]: Operador ja possui sessao ativa no terminal: "${turnoAtivo.caixa_nome}"`);
+                    throw new Error(`Este operador ja possui um turno aberto no terminal: "${turnoAtivo.caixa_nome}". Encerre a outra sessao antes.`);
+                }
             }
-        }
 
-        // =====================================================================
-        // 4. TRAVA B: Verifica se este operador comum já tem outro caixa aberto
-        // =====================================================================
-        let turnoAtivo = null;
-        if (this.isOnline) {
-            try {
-                const queryTrava = `
-                    SELECT m.id, c.descricao AS caixa_nome, c.id AS cod_caixa
-                    FROM movimentos_caixa m
-                    JOIN caixas c ON c.id = m.caixa_id AND c.deletado = false
-                    WHERE m.operador_abertura_id = $1 AND m.status = 'A' AND m.deletado = false
-                    LIMIT 1
-                `;
-                const resTrava = await this.pgClient.query(queryTrava, [operador.id]);
-                if (resTrava.rows.length > 0) turnoAtivo = resTrava.rows[0];
-            } catch (err) { this.isOnline = false; }
-        }
+            console.log(`[DB-LOGIN (SUCESSO)]: Sessao autorizada para o operador comum "${operador.nome}".`);
+            return operador;
 
-        if (!this.isOnline) {
-            turnoAtivo = await new Promise((resolve) => {
-                this.sqliteDb.get(
-                    `SELECT m.id, 'outro terminal (Offline)' AS caixa_nome, c.id AS cod_caixa 
-                    FROM movimentos_caixa_locais m 
-                    JOIN caixas_locais c ON c.id = m.caixa_id AND c.deletado = 0
-                    WHERE m.operador_abertura_id = ? AND m.status = 'A' AND m.deletado = 0`,
-                    [operador.id], (err, row) => resolve(row)
-                );
-            });
+        } catch (errGlobal) {
+            console.error("[ERRO CRITICO - realizarLogin FATAL]: Excecao nao tratada disparada no fluxo de faturamento:", errGlobal.message);
+            throw errGlobal;
         }
-
-        if (turnoAtivo) {
-            if (String(turnoAtivo.cod_caixa).trim() !== caixaIdStr) {
-                throw new Error(`Este operador já possui um turno aberto no terminal: "${turnoAtivo.caixa_nome}". Encerre a outra sessão antes.`);
-            }
-        }
-
-        return operador;
     }
 
     // Atualize por completo o método obterDadosCaixa
     async obterDadosCaixa(caixaId) {
-        const caixaLocal = await new Promise((resolve) => {
-            const queryLocal = 'SELECT id, descricao, empresa_id, filial_id FROM caixas_locais WHERE id = ? AND deletado = 0';
-            this.sqliteDb.get(queryLocal, [caixaId], (err, row) => {
-                if (err) resolve(null);
-                else resolve(row || null);
-            });
-        });
+        try {
+            console.log("[BANCO] Iniciando busca de dados do caixa...");
+            let caixaLocal = null;
 
-        if (caixaLocal && caixaLocal.empresa_id && caixaLocal.filial_id) {
-            console.log("[LOCAL] IDs de Empresa e Filial carregados com sucesso do SQLite.");
-            
-            this.tenantEmpresaId = caixaLocal.empresa_id;
-            this.tenantFilialId = caixaLocal.filial_id;
-
-            return {
-                id: caixaLocal.id,
-                descricao: caixaLocal.descricao,
-                empresa_id: caixaLocal.empresa_id,
-                filial_id: caixaLocal.filial_id,
-                empresa_nome: "Grupo Alfa Varejo", // 🌟 ADICIONADO PARA O FRONT-END
-                filial_nome: "Alfa Matriz"         // 🌟 ADICIONADO PARA O FRONT-END
-            };
-        }
-
-        if (this.isOnline) {
             try {
-                const queryPG = 'SELECT id, descricao, empresa_id, filial_id FROM caixas WHERE id = $1 AND deletado = false';
-                const resultado = await this.pgClient.query(queryPG, [caixaId]);
-                
-                if (resultado.rows.length > 0) {
-                    const caixa = resultado.rows[0];
-                    
-                    this.tenantEmpresaId = caixa.empresa_id;
-                    this.tenantFilialId = caixa.filial_id;
-                    
-                    await new Promise((resolve) => {
-                        this.sqliteDb.run(
-                            `INSERT INTO caixas_locais (id, descricao, empresa_id, filial_id, deletado) 
-                            VALUES (?, ?, ?, ?, 0) 
-                            ON CONFLICT(id) DO UPDATE SET descricao=?, empresa_id=?, filial_id=?`,
-                            [caixa.id, caixa.descricao, caixa.empresa_id, caixa.filial_id, caixa.descricao, caixa.empresa_id, caixa.filial_id],
-                            () => resolve()
-                        );
+                // Consulta a base de dados local SQLite
+                caixaLocal = await new Promise((resolve, reject) => {
+                    const queryLocal = 'SELECT id, descricao, empresa_id, filial_id FROM caixas_locais WHERE id = ? AND deletado = 0';
+                    this.sqliteDb.get(queryLocal, [caixaId], (err, row) => {
+                        if (err) {
+                            reject(err);
+                        } else {
+                            resolve(row || null);
+                        }
                     });
-                    
-                    console.log("[POSTGRES] Dados de governança baixados e salvos no SQLite Local.");
-                    return {
-                        id: caixa.id,
-                        descricao: caixa.descricao,
-                        empresa_id: caixa.empresa_id,
-                        filial_id: caixa.filial_id,
-                        empresa_nome: "Grupo Alfa Varejo", // 🌟 ADICIONADO PARA O FRONT-END
-                        filial_nome: "Alfa Matriz"         // 🌟 ADICIONADO PARA O FRONT-END
-                    };
-                }
-            } catch (err) {
-                console.log("Erro ao sincronizar dados do caixa com Postgres:", err);
-                this.isOnline = false;
+                });
+            } catch (errLite) {
+                console.error("[ERRO - obterDadosCaixa (SQLite Local)]:", errLite.message);
+                // Continua a execucao para tentar buscar no Postgres caso o SQLite falhe
             }
-        }
 
-        return caixaLocal; 
+            if (caixaLocal && caixaLocal.empresa_id && caixaLocal.filial_id) {
+                console.log("[LOCAL] IDs de Empresa e Filial carregados com sucesso do SQLite.");
+                
+                this.tenantEmpresaId = caixaLocal.empresa_id;
+                this.tenantFilialId = caixaLocal.filial_id;
+
+                return {
+                    id: caixaLocal.id,
+                    descricao: caixaLocal.descricao,
+                    empresa_id: caixaLocal.empresa_id,
+                    filial_id: caixaLocal.filial_id,
+                    empresa_nome: "Grupo Alfa Varejo",
+                    filial_nome: "Alfa Matriz"
+                };
+            }
+
+            // Se nao encontrou localmente ou faltam dados de governanca, busca no Postgres
+            if (this.isOnline) {
+                try {
+                    console.log("[POSTGRES] Buscando configuracoes de governanca do caixa no servidor remoto...");
+                    // Nota: Usando cast explicito ::uuid conforme mapeamento rigido do banco de dados remoto
+                    const queryPG = 'SELECT id, descricao, empresa_id, filial_id FROM caixas WHERE id = $1::uuid AND deletado = false';
+                    const resultado = await this.pgClient.query(queryPG, [caixaId]);
+                    
+                    if (resultado.rows.length > 0) {
+                        const caixa = resultado.rows[0];
+                        
+                        this.tenantEmpresaId = caixa.empresa_id;
+                        this.tenantFilialId = caixa.filial_id;
+                        
+                        try {
+                            // Salva ou atualiza os dados na tabela local de contingencia
+                            await new Promise((resolve, reject) => {
+                                this.sqliteDb.run(
+                                    `INSERT INTO caixas_locais (id, descricao, empresa_id, filial_id, deletado) 
+                                    VALUES (?, ?, ?, ?, 0) 
+                                    ON CONFLICT(id) DO UPDATE SET descricao=?, empresa_id=?, filial_id=?`,
+                                    [caixa.id, caixa.descricao, caixa.empresa_id, caixa.filial_id, caixa.descricao, caixa.empresa_id, caixa.filial_id],
+                                    (errInsert) => {
+                                        if (errInsert) reject(errInsert);
+                                        else resolve();
+                                    }
+                                );
+                            });
+                            console.log("[POSTGRES] Dados de governanca baixados e salvos no SQLite Local.");
+                        } catch (errSaveLite) {
+                            console.error("[ERRO - obterDadosCaixa (Gravar Carga SQLite)]:", errSaveLite.message);
+                        }
+                        
+                        return {
+                            id: caixa.id,
+                            descricao: caixa.descricao,
+                            empresa_id: caixa.empresa_id,
+                            filial_id: caixa.filial_id,
+                            empresa_nome: "Grupo Alfa Varejo",
+                            filial_nome: "Alfa Matriz"
+                        };
+                    } else {
+                        console.log("[POSTGRES] Nao foi localizado nenhum registro para o ID de caixa informado.");
+                    }
+                } catch (err) {
+                    console.error("[ERRO - obterDadosCaixa (Postgres Remote)]:", err.message);
+                    this.isOnline = false;
+                }
+            }
+
+            console.log("[BANCO] Finalizando metodo. Retornando ultima instancia conhecida do caixa local.");
+            return caixaLocal; 
+
+        } catch (errGlobal) {
+            console.error("[ERRO CRITICO - obterDadosCaixa FATAL]: Excecao nao tratada:", errGlobal.message);
+            return null;
+        }
     }
 
     // 🌟 MODIFICADO: Agora o método init recebe as credenciais lidas do JSON pelo Main
     // 🌟 ATUALIZADO: Livre de strings chumbadas e com validação rigorosa de parâmetros
     async init(configBanco) {
-        console.log(`[Banco Local] Caminho do SQLite: ${this.sqlitePath}`); //
-        
-        // 1. Inicializa o SQLite (Sempre ativo como porto seguro/contingência)
-        this.sqliteDb = new sqlite3.Database(this.sqlitePath); //
-        this.initSQLiteTables(); //
-
-        // 2. Validação das Credenciais do PostgreSQL externas
-        if (!configBanco || !configBanco.host || !configBanco.database || !configBanco.user || !configBanco.password) {
-            this.isOnline = false; //
-            console.log("==========================================================================");
-            console.error("ERRO CONEXÃO POSTGRESQL: Parâmetros inválidos ou não existem no config.json!");
-            console.log("Conectando em modo OFFLINE de contingência (Apenas SQLite Local Ativo).");
-            console.log("==========================================================================");
-            return; // Aborta a tentativa de conexão com o Postgres imediatamente
-        }
-
-        // 3. Se passou na validação do JSON, tenta conectar no Postgres físico
         try {
-            this.pgClient = new Client({
-                host: configBanco.host, 
-                database: configBanco.database,
-                user: configBanco.user,
-                password: configBanco.password,
-                port: parseInt(configBanco.port) || 5432,
-                connectionTimeoutMillis: 3000 //
-            });
+            console.log(`[Banco Local] Caminho do SQLite: ${this.sqlitePath}`);
 
-            await this.pgClient.connect();
-            this.isOnline = true;
-            console.log("[DATABASE] Conectado ao PostgreSQL externo com sucesso!");
-
-            // 🌟 ADICIONADO: Carrega todas as regras de escopo na inicialização do sistema
-            this.escoposCache = {};
+            // 1. Inicializa o SQLite (Sempre ativo como porto seguro/contingência)
             try {
-                const resEscopos = await this.pgClient.query("SELECT tabela_nome, escopo FROM tabelas_escopo");
-                resEscopos.rows.forEach(row => {
-                    this.escoposCache[row.tabela_nome.toLowerCase()] = String(row.escopo).toUpperCase();
-                });
-                console.log("[DATABASE] Cache de regras de escopo carregado com sucesso:", this.escoposCache);
-            } catch (errEscopo) {
-                console.error("Falha ao carregar tabela de escopos, usando padrões EXCLUSIVO:", errEscopo.message);
+                this.sqliteDb = new sqlite3.Database(this.sqlitePath);
+                console.log("[DATABASE] Instancia do arquivo SQLite inicializada.");
+            } catch (errSqliteInit) {
+                console.error("[ERRO CRITICO - init (Criar SQLite)]: Falha ao abrir arquivo de banco local:", errSqliteInit.message);
+                throw errSqliteInit;
             }
-        } catch (err) {
-            this.isOnline = false; //
-            console.log(`[DATABASE] Servidor Postgres inacessível (${err.message}). Modo OFFLINE ativo.`); //
+
+            try {
+                this.initSQLiteTables();
+                console.log("[DATABASE] Estrutura de tabelas locais validadas/criadas.");
+            } catch (errTables) {
+                console.error("[ERRO CRITICO - init (initSQLiteTables)]: Falha ao estruturar tabelas locais:", errTables.message);
+                throw errTables;
+            }
+
+            // 2. Validação das Credenciais do PostgreSQL externas
+            if (!configBanco || !configBanco.host || !configBanco.database || !configBanco.user || !configBanco.password) {
+                this.isOnline = false;
+                console.log("==========================================================================");
+                console.error("ERRO CONEXAO POSTGRESQL: Parametros invalidos ou nao existem no config.json!");
+                console.log("Conectando em modo OFFLINE de contingencia (Apenas SQLite Local Ativo).");
+                console.log("==========================================================================");
+                return; // Aborta a tentativa de conexão com o Postgres imediatamente
+            }
+
+            // 3. Se passou na validação do JSON, tenta conectar no Postgres físico
+            try {
+                this.pgClient = new Client({
+                    host: configBanco.host, 
+                    database: configBanco.database,
+                    user: configBanco.user,
+                    password: configBanco.password,
+                    port: parseInt(configBanco.port) || 5432,
+                    connectionTimeoutMillis: 3000
+                });
+
+                console.log("[DATABASE] Estabelecendo handshake de rede com o servidor PostgreSQL remoto...");
+                await this.pgClient.connect();
+                this.isOnline = true;
+                console.log("[DATABASE] Conectado ao PostgreSQL externo com sucesso!");
+
+                // Carrega todas as regras de escopo na inicialização do sistema
+                this.escoposCache = {};
+                try {
+                    const resEscopos = await this.pgClient.query("SELECT tabela_nome, escopo FROM tabelas_escopo");
+                    resEscopos.rows.forEach(row => {
+                        this.escoposCache[row.tabela_nome.toLowerCase()] = String(row.escopo).toUpperCase();
+                    });
+                    console.log("[DATABASE] Cache de regras de escopo carregado com sucesso:", this.escoposCache);
+                } catch (errEscopo) {
+                    console.error("[ERRO - init (query tabelas_escopo)]: Falha ao carregar tabela de escopos, usando padroes EXCLUSIVO:", errEscopo.message);
+                }
+            } catch (err) {
+                this.isOnline = false;
+                console.error(`[DATABASE] Servidor Postgres inacessivel (${err.message}). Modo OFFLINE ativo.`);
+            }
+
+        } catch (errGlobal) {
+            console.error("[ERRO CRITICO - init FATAL]: Falha geral nao tratada na inicializacao dos motores de banco de dados:", errGlobal.message);
         }
     }
 
@@ -417,31 +536,50 @@ class DatabaseManager {
     }
 
     async sincronizarOperadores() {
-        if (!this.pgClient) return { status: 'offline' };
+        if (!this.pgClient) {
+            console.log("[SYNC] Abortado: Sem cliente principal PostgreSQL configurado.");
+            return { status: 'offline' };
+        }
 
-        const pgTemp = new (require('pg').Client)({
-            host: this.pgClient.connectionParameters?.host || this.pgClient.options?.host,
-            database: this.pgClient.connectionParameters?.database || this.pgClient.options?.database,
-            user: this.pgClient.connectionParameters?.user || this.pgClient.options?.user,
-            password: this.pgClient.connectionParameters?.password || this.pgClient.options?.password,
-            port: parseInt(this.pgClient.connectionParameters?.port || this.pgClient.options?.port) || 5432,
-            connectionTimeoutMillis: 3000
-        });
+        let pgTemp = null;
+        try {
+            // Inicializa o cliente temporário isolado clonando as propriedades do principal
+            pgTemp = new (require('pg').Client)({
+                host: this.pgClient.connectionParameters?.host || this.pgClient.options?.host,
+                database: this.pgClient.connectionParameters?.database || this.pgClient.options?.database,
+                user: this.pgClient.connectionParameters?.user || this.pgClient.options?.user,
+                password: this.pgClient.connectionParameters?.password || this.pgClient.options?.password,
+                port: parseInt(this.pgClient.connectionParameters?.port || this.pgClient.options?.port) || 5432,
+                connectionTimeoutMillis: 3000
+            });
+        } catch (errClient) {
+            console.error("[ERRO - sincronizarOperadores (Instanciar pgTemp)]:", errClient.message);
+            return { status: 'erro', mensagem: errClient.message };
+        }
         
         try {
+            console.log("[SYNC] Estabelecendo conexao temporaria para lote de operadores...");
             await pgTemp.connect();
             
             if (!this.tenantEmpresaId || !this.tenantFilialId) {
-                return { status: 'erro', mensagem: 'IDs de governança ausentes no boot.' };
+                console.log("[SYNC] Interrompido: Identificadores de governanca corporativa ausentes.");
+                return { status: 'erro', mensagem: 'IDs de governanca ausentes no boot.' };
             }
 
-            const ultimaAtualizacao = await new Promise((resolve) => {
-                this.sqliteDb.get(`SELECT COALESCE(MAX(data_alteracao), '1970-01-01 00:00:00') as ultima FROM usuarios_locais`, (err, row) => {
-                    resolve(row ? row.ultima : '1970-01-01 00:00:00');
+            let ultimaAtualizacao = '1970-01-01 00:00:00';
+            try {
+                ultimaAtualizacao = await new Promise((resolve, reject) => {
+                    this.sqliteDb.get(`SELECT COALESCE(MAX(data_alteracao), '1970-01-01 00:00:00') as ultima FROM usuarios_locais`, (err, row) => {
+                        if (err) reject(err);
+                        else resolve(row ? row.ultima : '1970-01-01 00:00:00');
+                    });
                 });
-            });
+            } catch (errLiteGet) {
+                console.error("[ERRO - sincronizarOperadores (Consultar MAX data_alteracao SQLite)]:", errLiteGet.message);
+                throw errLiteGet;
+            }
 
-            console.log(`[SYNC-INCREMENTAL] Buscando operadores modificados no Postgres após: ${ultimaAtualizacao}`);
+            console.log(`[SYNC-INCREMENTAL] Buscando operadores modificados no Postgres apos: ${ultimaAtualizacao}`);
             
             const queryPG = `
                 SELECT DISTINCT
@@ -451,80 +589,113 @@ class DatabaseManager {
                 FROM usuarios u
                 JOIN usuarios_acessos a ON a.usuario_id = u.id
                 WHERE u.usuario_pdv = 'S' 
-                  AND u.deletado = false
-                  AND a.empresa_id = $1 
-                  AND a.filial_id = $2
-                  AND DATE_TRUNC('second', u.data_alteracao) > $3::timestamp
+                AND u.deletado = false
+                AND a.empresa_id = $1 
+                AND a.filial_id = $2
+                AND DATE_TRUNC('second', u.data_alteracao) > $3::timestamp
             `;
             
-            // 🌟 CORREÇÃO: Mudado de this.pgClient para pgTemp
             const resultado = await pgTemp.query(queryPG, [this.tenantEmpresaId, this.tenantFilialId, ultimaAtualizacao]);
             const operadoresNovos = resultado.rows;
 
             if (operadoresNovos.length === 0) {
-                console.log("[SYNC-INCREMENTAL] Base de operadores locais já está 100% atualizada.");
+                console.log("[SYNC-INCREMENTAL] Base de operadores locais ja esta 100% atualizada.");
                 return { status: 'sucesso', total: 0 };
             }
 
-            console.log(`[SYNC-INCREMENTAL] Injetando ${operadoresNovos.length} atualizações de operadores no SQLite...`);
+            console.log(`[SYNC-INCREMENTAL] Injetando ${operadoresNovos.length} atualizacoes de operadores no SQLite...`);
 
-            return new Promise((resolve, reject) => {
-                this.sqliteDb.serialize(() => {
-                    this.sqliteDb.run("BEGIN TRANSACTION");
+            try {
+                return await new Promise((resolve, reject) => {
+                    this.sqliteDb.serialize(() => {
+                        this.sqliteDb.run("BEGIN TRANSACTION");
 
-                    const stmt = this.sqliteDb.prepare(`
-                        INSERT INTO usuarios_locais (id, usuario, nome, senha, role, bloqueado, usuario_pdv, trocar_senha_prox_login, data_alteracao)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        ON CONFLICT(usuario) DO UPDATE SET 
-                            id = excluded.id, nome = excluded.nome, senha = excluded.senha, role = excluded.role, 
-                            bloqueado = excluded.bloqueado, usuario_pdv = excluded.usuario_pdv, 
-                            trocar_senha_prox_login = excluded.trocar_senha_prox_login, data_alteracao = excluded.data_alteracao
-                    `);
+                        const stmt = this.sqliteDb.prepare(`
+                            INSERT INTO usuarios_locais (id, usuario, nome, senha, role, bloqueado, usuario_pdv, trocar_senha_prox_login, data_alteracao)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            ON CONFLICT(usuario) DO UPDATE SET 
+                                id = excluded.id, nome = excluded.nome, senha = excluded.senha, role = excluded.role, 
+                                bloqueado = excluded.bloqueado, usuario_pdv = excluded.usuario_pdv, 
+                                trocar_senha_prox_login = excluded.trocar_senha_prox_login, data_alteracao = excluded.data_alteracao
+                        `);
 
-                    for (const op of operadoresNovos) {
-                        stmt.run([op.id, op.usuario, op.nome, op.senha, op.role, op.bloqueado, op.usuario_pdv, op.trocar_senha_prox_login, op.data_alteracao]);
-                    }
+                        for (const op of operadoresNovos) {
+                            stmt.run([op.id, op.usuario, op.nome, op.senha, op.role, op.bloqueado, op.usuario_pdv, op.trocar_senha_prox_login, op.data_alteracao]);
+                        }
 
-                    stmt.finalize();
-                    this.sqliteDb.run("COMMIT", (err) => {
-                        if (err) reject(err);
-                        else resolve({ status: 'sucesso', total: operadoresNovos.length });
+                        stmt.finalize();
+                        this.sqliteDb.run("COMMIT", (err) => {
+                            if (err) {
+                                reject(err);
+                            } else {
+                                console.log(`[SYNC-INCREMENTAL] Lote de ${operadoresNovos.length} operadores processado e comitado localmente.`);
+                                resolve({ status: 'sucesso', total: operadoresNovos.length });
+                            }
+                        });
                     });
                 });
-            });
+            } catch (errLiteSave) {
+                console.error("[ERRO - sincronizarOperadores (Gravar transacao SQLite)]:", errLiteSave.message);
+                throw errLiteSave;
+            }
 
         } catch (error) {
             console.error("[SYNC] Erro no lote incremental de operadores:", error.message);
             return { status: 'erro', mensagem: error.message };
         } finally {
-            // 🌟 CORREÇÃO: Encerra a conexão isolada liberando recursos
-            await pgTemp.end().catch(() => {});
+            if (pgTemp) {
+                try {
+                    console.log("[SYNC] Encerrando conexao temporaria de operadores...");
+                    await pgTemp.end();
+                } catch (errEnd) {
+                    console.error("[ERRO - sincronizarOperadores (Destruir pgTemp end)]:", errEnd.message);
+                }
+            }
         }
     }
 
     async sincronizarClientes() {
-        if (!this.pgClient) return { status: 'offline' };
+        if (!this.pgClient) {
+            console.log("[SYNC-CLIENTES] Abortado: Sem cliente principal PostgreSQL configurado.");
+            return { status: 'offline' };
+        }
 
-        const pgTemp = new (require('pg').Client)({
-            host: this.pgClient.connectionParameters?.host || this.pgClient.options?.host,
-            database: this.pgClient.connectionParameters?.database || this.pgClient.options?.database,
-            user: this.pgClient.connectionParameters?.user || this.pgClient.options?.user,
-            password: this.pgClient.connectionParameters?.password || this.pgClient.options?.password,
-            port: parseInt(this.pgClient.connectionParameters?.port || this.pgClient.options?.port) || 5432,
-            connectionTimeoutMillis: 3000
-        });
+        let pgTemp = null;
+        try {
+            // Inicializa o cliente temporário isolado clonando as propriedades do principal
+            pgTemp = new (require('pg').Client)({
+                host: this.pgClient.connectionParameters?.host || this.pgClient.options?.host,
+                database: this.pgClient.connectionParameters?.database || this.pgClient.options?.database,
+                user: this.pgClient.connectionParameters?.user || this.pgClient.options?.user,
+                password: this.pgClient.connectionParameters?.password || this.pgClient.options?.password,
+                port: parseInt(this.pgClient.connectionParameters?.port || this.pgClient.options?.port) || 5432,
+                connectionTimeoutMillis: 3000
+            });
+        } catch (errClient) {
+            console.error("[ERRO - sincronizarClientes (Instanciar pgTemp)]:", errClient.message);
+            return { status: 'erro', mensagem: errClient.message };
+        }
 
         try {
+            console.log("[SYNC-CLIENTES] Estabelecendo conexao temporaria para lote de clientes...");
             await pgTemp.connect();
+            
             const escopoAtual = this.obterEscopoTabela('clientes');
 
-            const ultimaAtualizacaoClientes = await new Promise((resolve) => {
-                this.sqliteDb.get(`SELECT COALESCE(MAX(data_alteracao), '1970-01-01 00:00:00') as ultima FROM clientes_locais`, (err, row) => {
-                    resolve(row ? row.ultima : '1970-01-01 00:00:00');
+            let ultimaAtualizacaoClientes = '1970-01-01 00:00:00';
+            try {
+                ultimaAtualizacaoClientes = await new Promise((resolve, reject) => {
+                    this.sqliteDb.get(`SELECT COALESCE(MAX(data_alteracao), '1970-01-01 00:00:00') as ultima FROM clientes_locais`, (err, row) => {
+                        if (err) reject(err);
+                        else resolve(row ? row.ultima : '1970-01-01 00:00:00');
+                    });
                 });
-            });
+            } catch (errLiteGet) {
+                console.error("[ERRO - sincronizarClientes (Consultar MAX data_alteracao SQLite)]:", errLiteGet.message);
+                throw errLiteGet;
+            }
 
-            console.log(`[SYNC-CLIENTES-INCREMENTAL] Verificando novos clientes após: ${ultimaAtualizacaoClientes} | Escopo: ${escopoAtual}`);
+            console.log(`[SYNC-CLIENTES-INCREMENTAL] Verificando novos clientes apos: ${ultimaAtualizacaoClientes} | Escopo: ${escopoAtual}`);
 
             let queryPG = "";
             let parametrosPG = [];
@@ -551,330 +722,456 @@ class DatabaseManager {
                 parametrosPG = [this.tenantEmpresaId, this.tenantFilialId, ultimaAtualizacaoClientes];
             }
 
-            // 🌟 CORREÇÃO: Mudado de this.pgClient para pgTemp
             const resultado = await pgTemp.query(queryPG, parametrosPG);
             const clientesNovos = resultado.rows;
 
             if (clientesNovos.length === 0) {
-                console.log("[SYNC-CLIENTES-INCREMENTAL] Base de clientes locais já está 100% atualizada.");
+                console.log("[SYNC-CLIENTES-INCREMENTAL] Base de clientes locais ja esta 100% atualizada.");
                 return { status: 'sucesso', total: 0 };
             }
 
             console.log(`[SYNC-CLIENTES-INCREMENTAL] Salvando ${clientesNovos.length} novos registros modificados no SQLite...`);
 
-            return new Promise((resolve, reject) => {
-                this.sqliteDb.serialize(() => {
-                    this.sqliteDb.run("BEGIN TRANSACTION");
+            try {
+                return await new Promise((resolve, reject) => {
+                    this.sqliteDb.serialize(() => {
+                        this.sqliteDb.run("BEGIN TRANSACTION");
 
-                    const stmt = this.sqliteDb.prepare(`
-                        INSERT INTO clientes_locais (id, empresa_id, filial_id, nome, cpf, limite_credito, bloqueado, deletado, data_alteracao)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)
-                        ON CONFLICT(id) DO UPDATE SET 
-                            nome = excluded.nome, cpf = excluded.cpf, limite_credito = excluded.limite_credito, 
-                            bloqueado = excluded.bloqueado, filial_id = excluded.filial_id, data_alteracao = excluded.data_alteracao
-                    `);
+                        const stmt = this.sqliteDb.prepare(`
+                            INSERT INTO clientes_locais (id, empresa_id, filial_id, nome, cpf, limite_credito, bloqueado, deletado, data_alteracao)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)
+                            ON CONFLICT(id) DO UPDATE SET 
+                                nome = excluded.nome, cpf = excluded.cpf, limite_credito = excluded.limite_credito, 
+                                bloqueado = excluded.bloqueado, filial_id = excluded.filial_id, data_alteracao = excluded.data_alteracao
+                        `);
 
-                    for (const cli of clientesNovos) {
-                        const saldoDisponivel = parseFloat(cli.limite_restante || 0);
-                        stmt.run([cli.id, cli.empresa_id, cli.filial_id, cli.nome, cli.cpf, saldoDisponivel, cli.bloqueado, cli.data_alteracao]);
-                    }
+                        for (const cli of clientesNovos) {
+                            const saldoDisponivel = parseFloat(cli.limite_restante || 0);
+                            stmt.run([cli.id, cli.empresa_id, cli.filial_id, cli.nome, cli.cpf, saldoDisponivel, cli.bloqueado, cli.data_alteracao]);
+                        }
 
-                    stmt.finalize();
-                    this.sqliteDb.run("COMMIT", (err) => {
-                        if (err) reject(err);
-                        else resolve({ status: 'sucesso', total: clientesNovos.length });
+                        stmt.finalize();
+                        this.sqliteDb.run("COMMIT", (err) => {
+                            if (err) {
+                                reject(err);
+                            } else {
+                                console.log(`[SYNC-CLIENTES-INCREMENTAL] Lote de ${clientesNovos.length} clientes gravado e comitado localmente.`);
+                                resolve({ status: 'sucesso', total: clientesNovos.length });
+                            }
+                        });
                     });
                 });
-            });
+            } catch (errLiteSave) {
+                console.error("[ERRO - sincronizarClientes (Gravar transacao SQLite)]:", errLiteSave.message);
+                throw errLiteSave;
+            }
 
         } catch (error) {
             console.error("[SYNC-CLIENTES] Erro fatal no lote incremental:", error.message);
             return { status: 'erro', mensagem: error.message };
         } finally {
-            // 🌟 CORREÇÃO: Encerra a conexão isolada liberando recursos
-            await pgTemp.end().catch(() => {});
+            if (pgTemp) {
+                try {
+                    console.log("[SYNC-CLIENTES] Encerrando conexao temporaria de clientes...");
+                    await pgTemp.end();
+                } catch (errEnd) {
+                    console.error("[ERRO - sincronizarClientes (Destruir pgTemp end)]:", errEnd.message);
+                }
+            }
         }
     }
 
     // Método auxiliar para buscar/filtrar os clientes locais na hora da venda (via autocomplete)
     async buscarClientesLocais(termoBusca) {
-        return new Promise((resolve) => {
-            const termo = `%${String(termoBusca || '').trim()}%`;
-            const query = `
-                SELECT id, nome, cpf, limite_credito, bloqueado 
-                FROM clientes_locais 
-                WHERE (nome LIKE ? OR cpf LIKE ?) AND deletado = 0
-                LIMIT 10
-            `;
-            this.sqliteDb.all(query, [termo, termo], (err, rows) => {
-                if (err) resolve([]);
-                else resolve(rows || []);
+        try {
+            console.log("[BANCO] Iniciando busca automatica de clientes locais...");
+
+            return await new Promise((resolve, reject) => {
+                const termo = `%${String(termoBusca || '').trim()}%`;
+                const query = `
+                    SELECT id, nome, cpf, limite_credito, bloqueado 
+                    FROM clientes_locais 
+                    WHERE (nome LIKE ? OR cpf LIKE ?) AND deletado = 0
+                    LIMIT 10
+                `;
+
+                this.sqliteDb.all(query, [termo, termo], (err, rows) => {
+                    if (err) {
+                        console.error("[ERRO - buscarClientesLocais (Query SQLite)]:", err.message);
+                        // Retorna um array vazio em caso de erro na consulta para nao travar o componente de autocomplete do front-end
+                        resolve([]);
+                    } else {
+                        console.log(`[BANCO] Busca concluida. Encontrados ${rows ? rows.length : 0} clientes locais.`);
+                        resolve(rows || []);
+                    }
+                });
             });
-        });
+
+        } catch (errGlobal) {
+            console.error("[ERRO CRITICO - buscarClientesLocais FATAL]: Excecao nao tratada no fluxo de listagem:", errGlobal.message);
+            return [];
+        }
     }
 
     async verificarCaixaAberto(caixaId) {
-        if (this.isOnline) {
-            try {
-                const query = `SELECT id FROM movimentos_caixa WHERE caixa_id = $1 AND status = 'A' AND deletado = false LIMIT 1`;
-                const res = await this.pgClient.query(query, [caixaId]);
-                return res.rows.length > 0;
-            } catch (err) {
-                // 🌟 REVELA O ERRO SE O CAIXA_ABERTO FALHAR
-                console.error("[FALHA SILENCIOSA - VERIFICAR CAIXA ABERTO]:", err.message);
-                this.isOnline = false;
+        try {
+            if (this.isOnline) {
+                try {
+                    console.log("[BANCO] Verificando status de abertura do caixa no PostgreSQL externo...");
+                    // Aplicado o cast explicito ::uuid para garantir a compatibilidade com o tipo estrito do Postgres
+                    const query = `SELECT id FROM movimentos_caixa WHERE caixa_id = $1::uuid AND status = 'A' AND deletado = false LIMIT 1`;
+                    const res = await this.pgClient.query(query, [caixaId]);
+                    return res.rows.length > 0;
+                } catch (err) {
+                    console.error("[ERRO - verificarCaixaAberto (Postgres Remote)]:", err.message);
+                    this.isOnline = false;
+                    // Nao interrompe o fluxo, deixa seguir para tentar ler a contingencia local abaixo
+                }
             }
-        }
-        
-        return new Promise((resolve) => {
-            this.sqliteDb.get(`SELECT id FROM movimentos_caixa_locais WHERE caixa_id = ? AND status = 'A' AND deletado = 0`, [caixaId], (err, row) => {
-                resolve(!!row);
+            
+            console.log("[BANCO] Consultando status de abertura do caixa na base local SQLite...");
+            return await new Promise((resolve, reject) => {
+                const queryLocal = `SELECT id FROM movimentos_caixa_locais WHERE caixa_id = ? AND status = 'A' AND deletado = 0`;
+                this.sqliteDb.get(queryLocal, [caixaId], (err, row) => {
+                    if (err) {
+                        console.error("[ERRO - verificarCaixaAberto (Query SQLite)]:", err.message);
+                        // Resolve como false em vez de rejeitar para permitir que o fluxo do caixa trate de forma segura
+                        resolve(false);
+                    } else {
+                        const statusAberto = !!row;
+                        console.log(`[BANCO] Validacao concluida. Turno local aberto: ${statusAberto}`);
+                        resolve(statusAberto);
+                    }
+                });
             });
-        });
+
+        } catch (errGlobal) {
+            console.error("[ERRO CRITICO - verificarCaixaAberto FATAL]: Excecao nao tratada na checagem de turno:", errGlobal.message);
+            return false;
+        }
     }
 
     async abrirCaixa(caixaId, operadorId, valorAbertura) {
-        const idMovimento = crypto.randomUUID();
-        const dataAtual = obterDataHoraLocalANSI();
-
-        // 🌟 CAPTURA DOS IDS GLOBAIS DE GOVERNANÇA EM MEMÓRIA
-        const empIdGlobal = this.tenantEmpresaId;
-        const filIdGlobal = this.tenantFilialId;
-
-        if (this.isOnline) {
-            try {
-                // ❌ REMOVIDO: A consulta 'SELECT empresa_id, filial_id FROM caixas...' foi deletada daqui!
-                if (!empIdGlobal) {
-                    throw new Error('Dados de governança (Empresa ID) ausentes no escopo em memória.');
-                }
-
-                // 🌟 NOVO: Busca a regra de escopo diretamente do cache global em memória
-                const escopoTurnos = this.obterEscopoTabela('movimentos_caixa');
-
-                // 🌟 REGRA DE ESCOPO: Se movimentos_caixa for COMPARTILHADO, grava filial_id como NULL
-                const filialPgValor = (escopoTurnos === 'COMPARTILHADO') ? null : filIdGlobal;
-
-                const queryPG = `
-                    INSERT INTO movimentos_caixa (id, caixa_id, operador_abertura_id, data_abertura, valor_abertura, status, empresa_id, filial_id)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-                `;
-                await this.pgClient.query(queryPG, [idMovimento, caixaId, operadorId, dataAtual, valorAbertura, 'A', empIdGlobal, filialPgValor]);
-                console.log("[BANCO] Turno de caixa aberto com sucesso no PostgreSQL.");
-            } catch (err) {
-                console.error("[BANCO] Erro ao abrir no Postgres, mudando para contingência offline:", err.message);
-                this.isOnline = false;
-            }
-        }
-
-        const jaSincronizado = this.isOnline ? 1 : 0; // 🌟 Identifica se subiu na hora pro Postgres
-
-        return new Promise((resolve, reject) => {
-            const queryLite = `
-                INSERT INTO movimentos_caixa_locais (id, caixa_id, operador_abertura_id, data_abertura, valor_abertura, status, sincronizado) 
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            `;
+        try {
+            console.log("[BANCO] Iniciando processo de abertura de turno de caixa...");
             
-            this.sqliteDb.run(
-                queryLite, 
-                [idMovimento, caixaId, operadorId, dataAtual, valorAbertura, 'A', jaSincronizado], 
-                (err) => {
-                    if (err) {
-                        console.error("[BANCO] Erro crítico ao salvar no SQLite:", err);
-                        reject(err);
-                    } else {
-                        console.log(`[BANCO] Turno de caixa aberto com sucesso no SQLite (Sincronizado: ${jaSincronizado}).`);
-                        resolve({ status: 'sucesso', id: idMovimento });
-                    }
-                }
-            );
-        });
-    }
+            let idMovimento = null;
+            let dataAtual = null;
 
-    async registrarVenda(caixaId, operadorId, total, formaPagamento, origem, descricaoMovimento, bandeira = null, parcelas = 1, clienteId = '00000000-0000-0000-0000-000000000000') {
-        const idVenda = crypto.randomUUID();
-        const dataAtual = obterDataHoraLocalANSI();
-
-        // 🌟 TRAVA DE SEGURANÇA ANTICORRUPÇÃO: Garante que vendas em Crediário nunca salvem informações de bandeira de cartão
-        if (formaPagamento === 'CR') {
-            bandeira = null;
-        }
-
-        // CAPTURA DOS IDS GLOBAIS DE GOVERNANÇA EM MEMÓRIA
-        const empIdGlobal = this.tenantEmpresaId;
-        const filIdGlobal = this.tenantFilialId;
-
-        // =====================================================================
-        // 🔒 TRAVA DE CRÉDITO HÍBRIDA: Checagem em Tempo Real na Rede (CR)
-        // =====================================================================
-        if (formaPagamento === 'CR') {
-            if (clienteId === '00000000-0000-0000-0000-000000000000' || !clienteId) {
-                throw new Error("Operação Recusada: Vendas no Crediário exigem obrigatoriamente a identificação de um Cliente nominal.");
+            try {
+                idMovimento = crypto.randomUUID();
+                dataAtual = obterDataHoraLocalANSI();
+            } catch (errParams) {
+                console.error("[ERRO - abrirCaixa (Geracao de Parametros)]:", errParams.message);
+                throw new Error("Falha interna ao gerar metadados para abertura do turno.");
             }
 
-            const dadosCliente = await new Promise((resolve) => {
-                this.sqliteDb.get(`SELECT nome, limite_credito FROM clientes_locais WHERE id = ?`, [clienteId], (err, row) => resolve(row));
-            });
-
-            if (!dadosCliente) {
-                throw new Error("Operação Recusada: Cliente não localizado na base de dados do terminal.");
-            }
-
-            const tetoCadastrado = parseFloat(dadosCliente.limite_credito || 0);
-            const valorVendaAtual = parseFloat(total || 0);
-            let totalDebitosAtuais = 0;
+            // CAPTURA DOS IDS GLOBAIS DE GOVERNANÇA EM MEMÓRIA
+            const empIdGlobal = this.tenantEmpresaId;
+            const filIdGlobal = this.tenantFilialId;
 
             if (this.isOnline) {
                 try {
-                    const querySaldoGlobal = `
-                        SELECT COALESCE(SUM(saldo_restante), 0) as total_devido 
-                        FROM contas_a_receber 
-                        WHERE cliente_id = $1 AND status = 'P' AND deletado = false
+                    if (!empIdGlobal) {
+                        throw new Error("Dados de governanca (Empresa ID) ausentes no escopo em memoria.");
+                    }
+
+                    // Busca a regra de escopo diretamente do cache global em memória
+                    const escopoTurnos = this.obterEscopoTabela('movimentos_caixa');
+
+                    // REGRA DE ESCOPO: Se movimentos_caixa for COMPARTILHADO, grava filial_id como NULL
+                    const filialPgValor = (escopoTurnos === 'COMPARTILHADO') ? null : filIdGlobal;
+
+                    console.log("[POSTGRES] Inserindo registro de abertura de turno no servidor remoto...");
+                    
+                    // Aplicado o cast explicito ::uuid nos parametros string do Postgres para evitar conflitos de tipagem
+                    const queryPG = `
+                        INSERT INTO movimentos_caixa (id, caixa_id, operador_abertura_id, data_abertura, valor_abertura, status, empresa_id, filial_id)
+                        VALUES ($1::uuid, $2::uuid, $3::uuid, $4::timestamp, $5, $6, $7::uuid, $8::uuid)
                     `;
-                    const resSaldoGlobal = await this.pgClient.query(querySaldoGlobal, [clienteId]);
-                    totalDebitosAtuais = parseFloat(resSaldoGlobal.rows[0].total_devido || 0);
+                    await this.pgClient.query(queryPG, [idMovimento, caixaId, operadorId, dataAtual, valorAbertura, 'A', empIdGlobal, filialPgValor]);
+                    console.log("[BANCO] Turno de caixa aberto com sucesso no PostgreSQL.");
                 } catch (err) {
+                    console.error("[BANCO] Erro ao abrir no Postgres, mudando para contingencia offline:", err.message);
                     this.isOnline = false;
                 }
             }
 
-            if (!this.isOnline) {
-                totalDebitosAtuais = await new Promise((resolve) => {
-                    this.sqliteDb.get(
-                        `SELECT COALESCE(SUM(valor_original), 0) as total_devido FROM contas_a_receber_locais WHERE cliente_id = ? AND status = 'P' AND deletado = 0`,
-                        [clienteId],
-                        (err, row) => resolve(row ? (row.total_devido || 0) : 0)
+            const jaSincronizado = this.isOnline ? 1 : 0; // Identifica se subiu na hora pro Postgres
+
+            console.log("[BANCO] Gravando registro de abertura de turno na base local SQLite...");
+            return await new Promise((resolve, reject) => {
+                const queryLite = `
+                    INSERT INTO movimentos_caixa_locais (id, caixa_id, operador_abertura_id, data_abertura, valor_abertura, status, sincronizado) 
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                `;
+                
+                this.sqliteDb.run(
+                    queryLite, 
+                    [idMovimento, caixaId, operadorId, dataAtual, valorAbertura, 'A', jaSincronizado], 
+                    (err) => {
+                        if (err) {
+                            console.error("[BANCO] Erro critico ao salvar abertura de turno no SQLite:", err.message);
+                            reject(err);
+                        } else {
+                            console.log(`[BANCO] Turno de caixa aberto com sucesso no SQLite (Sincronizado: ${jaSincronizado}).`);
+                            resolve({ status: 'sucesso', id: idMovimento });
+                        }
+                    }
+                );
+            });
+
+        } catch (errGlobal) {
+            console.error("[ERRO CRITICO - abrirCaixa FATAL]: Excecao nao tratada na rotina de abertura de turno:", errGlobal.message);
+            throw errGlobal;
+        }
+    }
+
+    async registrarVenda(caixaId, operadorId, total, formaPagamento, origem, descricaoMovimento, bandeira = null, parcelas = 1, clienteId = '00000000-0000-0000-0000-000000000000') {
+        try {
+            console.log("[BANCO] Iniciando fluxo de registro de venda...");
+            
+            let idVenda = null;
+            let dataAtual = null;
+
+            try {
+                idVenda = crypto.randomUUID();
+                dataAtual = obterDataHoraLocalANSI();
+            } catch (errParams) {
+                console.error("[ERRO - registrarVenda (Geracao de Metadados)]:", errParams.message);
+                throw new Error("Falha interna ao gerar identificadores para a venda.");
+            }
+
+            // TRAVA DE SEGURANÇA ANTICORRUPÇÃO: Garante que vendas em Crediário nunca salvem informações de bandeira de cartão
+            if (formaPagamento === 'CR') {
+                bandeira = null;
+            }
+
+            // CAPTURA DOS IDS GLOBAIS DE GOVERNANÇA EM MEMÓRIA
+            const empIdGlobal = this.tenantEmpresaId;
+            const filIdGlobal = this.tenantFilialId;
+
+            // =====================================================================
+            // TRAVA DE CRÉDITO HÍBRIDA: Checagem em Tempo Real na Rede (CR)
+            // =====================================================================
+            if (formaPagamento === 'CR') {
+                if (clienteId === '00000000-0000-0000-0000-000000000000' || !clienteId) {
+                    console.log("[BANCO (RECUSADO)]: Tentativa de crediario sem cliente nominal.");
+                    throw new Error("Operacao Recusada: Vendas no Crediario exigem obrigatoriamente a identificacao de um Cliente nominal.");
+                }
+
+                let dadosCliente = null;
+                try {
+                    dadosCliente = await new Promise((resolve, reject) => {
+                        this.sqliteDb.get(`SELECT nome, limite_credito FROM clientes_locais WHERE id = ?`, [clienteId], (err, row) => {
+                            if (err) reject(err);
+                            else resolve(row || null);
+                        });
+                    });
+                } catch (errCliLite) {
+                    console.error("[ERRO - registrarVenda (Consultar Cliente SQLite)]:", errCliLite.message);
+                    throw new Error("Falha ao validar cadastro do cliente na base local.");
+                }
+
+                if (!dadosCliente) {
+                    console.log(`[BANCO (RECUSADO)]: Cliente com ID ${clienteId} nao localizado no terminal.`);
+                    throw new Error("Operacao Recusada: Cliente nao localizado na base de dados do terminal.");
+                }
+
+                const tetoCadastrado = parseFloat(dadosCliente.limite_credito || 0);
+                const valorVendaAtual = parseFloat(total || 0);
+                let totalDebitosAtuais = 0;
+
+                if (this.isOnline) {
+                    try {
+                        console.log("[BANCO] Consultando debitos globais do cliente no Postgres...");
+                        const querySaldoGlobal = `
+                            SELECT COALESCE(SUM(saldo_restante), 0) as total_devido 
+                            FROM contas_a_receber 
+                            WHERE cliente_id = $1::uuid AND status = 'P' AND deletado = false
+                        `;
+                        const resSaldoGlobal = await this.pgClient.query(querySaldoGlobal, [clienteId]);
+                        totalDebitosAtuais = parseFloat(resSaldoGlobal.rows[0].total_devido || 0);
+                    } catch (err) {
+                        console.error("[ERRO - registrarVenda (Saldo Global Postgres)]:", err.message);
+                        this.isOnline = false;
+                    }
+                }
+
+                if (!this.isOnline) {
+                    try {
+                        console.log("[BANCO] Consultando debitos locais do cliente no SQLite...");
+                        totalDebitosAtuais = await new Promise((resolve, reject) => {
+                            this.sqliteDb.get(
+                                `SELECT COALESCE(SUM(valor_original), 0) as total_devido FROM contas_a_receber_locais WHERE cliente_id = ? AND status = 'P' AND deletado = 0`,
+                                [clienteId],
+                                (err, row) => {
+                                    if (err) reject(err);
+                                    else resolve(row ? (row.total_devido || 0) : 0);
+                                }
+                            );
+                        });
+                    } catch (errSaldoLite) {
+                        console.error("[ERRO - registrarVenda (Saldo Local SQLite)]:", errSaldoLite.message);
+                    }
+                }
+
+                const limiteDisponivel = tetoCadastrado - totalDebitosAtuais;
+
+                if ((totalDebitosAtuais + valorVendaAtual) > tetoCadastrado) {
+                    console.log(`[BANCO (RECUSADO)]: Limite insuficiente para o cliente ${dadosCliente.nome}`);
+                    throw new Error(`Limite Insuficiente: O cliente "${dadosCliente.nome}" possui teto de R$ ${tetoCadastrado.toFixed(2)}. Ele ja possui R$ ${totalDebitosAtuais.toFixed(2)} em debitos em aberto na rede. Limite restante: R$ ${limiteDisponivel.toFixed(2)}. Esta nova compra totaliza R$ ${valorVendaAtual.toFixed(2)}.`);
+                }
+            }
+
+            // 1. SALVA A VENDA NO SQLITE LOCAL PRIMEIRO
+            try {
+                console.log("[BANCO] Salvando cabecalho da venda no SQLite local...");
+                await new Promise((resolve, reject) => {
+                    const queryLite = `
+                        INSERT INTO vendas_locais (id, caixa_id, operador_id, cliente_id, forma_pagamento, origem, total, descricao_movimento, data_venda, sincronizado, deletado, bandeira, parcelas) 
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)
+                    `;
+                    this.sqliteDb.run(
+                        queryLite, 
+                        [idVenda, caixaId, operadorId, clienteId, formaPagamento, origem, total, descricaoMovimento, dataAtual, bandeira, parcelas], 
+                        (err) => { if (err) reject(err); else resolve(); }
                     );
                 });
+            } catch (errSaleLite) {
+                console.error("[ERRO CRITICO - registrarVenda (Gravar venda SQLite)]:", errSaleLite.message);
+                throw new Error("Nao foi possivel registrar o cabecalho da venda localmente.");
             }
 
-            const limiteDisponivel = tetoCadastrado - totalDebitosAtuais;
-
-            if ((totalDebitosAtuais + valorVendaAtual) > tetoCadastrado) {
-                throw new Error(`Limite Insuficiente: O cliente "${dadosCliente.nome}" possui teto de R$ ${tetoCadastrado.toFixed(2)}. Ele já possui R$ ${totalDebitosAtuais.toFixed(2)} em débitos em aberto na rede. Limite restante: R$ ${limiteDisponivel.toFixed(2)}. Esta nova compra totaliza R$ ${valorVendaAtual.toFixed(2)}.`);
-            }
-        }
-
-        // 1. SALVA A VENDA NO SQLITE LOCAL PRIMEIRO
-        await new Promise((resolve, reject) => {
-            const queryLite = `
-                INSERT INTO vendas_locais (id, caixa_id, operador_id, cliente_id, forma_pagamento, origem, total, descricao_movimento, data_venda, sincronizado, deletado, bandeira, parcelas) 
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)
-            `;
-            this.sqliteDb.run(
-                queryLite, 
-                [idVenda, caixaId, operadorId, clienteId, formaPagamento, origem, total, descricaoMovimento, dataAtual, bandeira, parcelas], 
-                (err) => { if (err) reject(err); else resolve(); }
-            );
-        });
-
-        // 2. GERAÇÃO DE PARCELAS NO CREDIÁRIO DESMEMBRADO (CR) NO SQLITE
-        if (formaPagamento === 'CR' && total > 0) {
-            const valorPorParcela = total / parcelas;
-            
-            for (let i = 1; i <= parcelas; i++) {
-                const idConta = crypto.randomUUID();
-                const dataVencimento = new Date();
-                dataVencimento.setDate(dataVencimento.getDate() + (30 * i));
-                const dataVencimentoStr = obterDataHoraLocalANSI(dataVencimento).split(' ')[0];
-
-                await new Promise((resolve, reject) => {
-                    const queryCRLite = `
-                        INSERT INTO contas_a_receber_locais (id, venda_id, cliente_id, data_vencimento, valor_original, status, sincronizado, deletado)
-                        VALUES (?, ?, ?, ?, ?, 'P', 0, 0)
-                    `;
-                    this.sqliteDb.run(queryCRLite, [idConta, idVenda, clienteId, dataVencimentoStr, valorPorParcela], (err) => {
-                        if (err) reject(err); else resolve();
-                    });
-                });
-            }
-        }
-
-        // GERAÇÃO DE PARCELAS SE FOR CARTÃO (CC) NO SQLITE LOCAL
-        if (formaPagamento === 'CC' && total > 0) {
-            const valorPorParcela = total / parcelas;
-            for (let i = 1; i <= parcelas; i++) {
-                const idRecebivel = crypto.randomUUID();
-                const dataPrevista = new Date();
-                dataPrevista.setDate(dataPrevista.getDate() + (30 * i));
-                const dataPrevistaStr = obterDataHoraLocalANSI(dataPrevista);
-
-                await new Promise((resolve, reject) => {
-                    this.sqliteDb.run(`
-                        INSERT INTO recebiveis_cartao_locais (id, venda_id, caixa_id, parcela_numero, valor_parcela, data_prevista_recebimento, status, sincronizado, deletado)
-                        VALUES (?, ?, ?, ?, ?, ?, 'P', 0, 0)
-                    `, [idRecebivel, idVenda, caixaId, i, valorPorParcela, dataPrevistaStr], (err) => {
-                        if (err) reject(err); else resolve();
-                    });
-                });
-            }
-        }
-
-        // 3. REPLICAÇÃO EM TEMPO REAL PRO POSTGRESQL (SE ONLINE)
-        if (this.isOnline) {
-            try {
-                if (!empIdGlobal) throw new Error('Dados de governança (Empresa ID) ausentes no escopo.');
-
-                // 🌟 NOVO: Lê a regra dinamicamente direto da memória cache
-                const escopoVendas = this.obterEscopoTabela('vendas');
-                const filialPgValor = (escopoVendas === 'COMPARTILHADO') ? null : filIdGlobal;
-
-                const queryPG = `
-                    INSERT INTO vendas (id, caixa_id, operador_id, cliente_id, forma_pagamento, origem, total, descricao_movimento, data_venda, bandeira, parcelas, empresa_id, filial_id) 
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-                `;
-                await this.pgClient.query(queryPG, [idVenda, caixaId, operadorId, clienteId, formaPagamento, origem, total, descricaoMovimento, dataAtual, bandeira, parcelas, empIdGlobal, filialPgValor]);
-                
-                // UPLOAD DAS MÚLTIPLAS PARCELAS DE CREDIÁRIO PRO POSTGRES
-                if (formaPagamento === 'CR') {
-                    const contasLocais = await new Promise((resolve) => {
-                        this.sqliteDb.all(`SELECT * FROM contas_a_receber_locais WHERE venda_id = ?`, [idVenda], (err, rows) => resolve(rows || []));
-                    });
+            // 2. GERAÇÃO DE PARCELAS NO CREDIÁRIO DESMEMBRADO (CR) NO SQLITE
+            if (formaPagamento === 'CR' && total > 0) {
+                try {
+                    console.log(`[BANCO] Gerando ${parcelas} parcelas de crediario no SQLite...`);
+                    const valorPorParcela = total / parcelas;
                     
-                    // 🌟 NOVO: Lê a regra dinamicamente direto da memória cache
-                    const escopoCR = this.obterEscopoTabela('contas_a_receber');
-                    const filialCRPgValor = (escopoCR === 'COMPARTILHADO') ? null : filIdGlobal;
+                    for (let i = 1; i <= parcelas; i++) {
+                        const idConta = crypto.randomUUID();
+                        const dataVencimento = new Date();
+                        dataVencimento.setDate(dataVencimento.getDate() + (30 * i));
+                        const dataVencimentoStr = obterDataHoraLocalANSI(dataVencimento).split(' ')[0];
 
-                    let nrParcela = 1;
-                    for (const conta of contasLocais) {
-                        const queryCRPostgres = `
-                            INSERT INTO contas_a_receber (id, empresa_id, filial_id, venda_id, cliente_id, parcela_numero, total_parcelas, data_emissao, data_vencimento, valor_original, valor_juros, valor_multa, valor_pago, saldo_restante, status, deletado)
-                            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 0.00, 0.00, 0.00, $11, 'P', false)
-                        `;
-                        
-                        await this.pgClient.query(queryCRPostgres, [
-                            conta.id, empIdGlobal, filialCRPgValor, idVenda, clienteId,
-                            nrParcela, parcelas, dataAtual, conta.data_vencimento, conta.valor_original, conta.valor_original
-                        ]);
-
-                        this.sqliteDb.run(`UPDATE contas_a_receber_locais SET sincronizado = 1 WHERE id = ?`, [conta.id]);
-                        nrParcela++;
+                        await new Promise((resolve, reject) => {
+                            const queryCRLite = `
+                                INSERT INTO contas_a_receber_locais (id, venda_id, cliente_id, data_vencimento, valor_original, status, sincronizado, deletado)
+                                VALUES (?, ?, ?, ?, ?, 'P', 0, 0)
+                            `;
+                            this.sqliteDb.run(queryCRLite, [idConta, idVenda, clienteId, dataVencimentoStr, valorPorParcela], (err) => {
+                                if (err) reject(err); else resolve();
+                            });
+                        });
                     }
+                } catch (errCRLite) {
+                    console.error("[ERRO CRITICO - registrarVenda (Gerar parcelas crediario SQLite)]:", errCRLite.message);
+                    throw new Error("Falha interna ao desmembrar parcelas de crediario local.");
                 }
-
-                if (formaPagamento === 'CC') {
-                    // ❌ REMOVIDO: Consulta de escopo de recebíveis deletada daqui!
-                    // 🌟 NOVO: Carrega as regras de recebíveis em lote direto do cache de uma vez só
-                    const escopoRecebiveis = this.obterEscopoTabela('recebiveis_cartao');
-                    const filialRecPgValor = (escopoRecebiveis === 'COMPARTILHADO') ? null : filIdGlobal;
-
-                    const recebiveis = await new Promise((resolve) => {
-                        this.sqliteDb.all(`SELECT * FROM recebiveis_cartao_locais WHERE venda_id = ?`, [idVenda], (err, rows) => resolve(rows || []));
-                    });
-                    for (const rec of recebiveis) {
-                        await this.pgClient.query(`INSERT INTO recebiveis_cartao (id, venda_id, caixa_id, parcela_numero, valor_parcela, data_prevista_recebimento, status, empresa_id, filial_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`, [rec.id, idVenda, caixaId, rec.parcela_numero, rec.valor_parcela, rec.data_prevista_recebimento, 'P', empIdGlobal, filialRecPgValor]);
-                        this.sqliteDb.run(`UPDATE recebiveis_cartao_locais SET sincronizado = 1 WHERE id = ?`, [rec.id]);
-                    }
-                }
-
-                this.sqliteDb.run(`UPDATE vendas_locais SET sincronizado = 1 WHERE id = ?`, [idVenda]);
-                return { status: 'sucesso', modo: 'ONLINE', id: idVenda };
-            } catch (err) {
-                console.log("Erro ao espelhar transação no Postgres, migrando para contingência:", err.message);
-                this.isOnline = false;
             }
-        }
 
-        return { status: 'sucesso', modo: 'OFFLINE (SQLite)', id: idVenda };
+            // GERAÇÃO DE PARCELAS SE FOR CARTÃO (CC) NO SQLITE LOCAL
+            if (formaPagamento === 'CC' && total > 0) {
+                try {
+                    console.log(`[BANCO] Gerando ${parcelas} parcelas de recebivel de cartao no SQLite...`);
+                    const valorPorParcela = total / parcelas;
+                    for (let i = 1; i <= parcelas; i++) {
+                        const idRecebivel = crypto.randomUUID();
+                        const dataPrevista = new Date();
+                        dataPrevista.setDate(dataPrevista.getDate() + (30 * i));
+                        const dataPrevistaStr = obterDataHoraLocalANSI(dataPrevista);
+
+                        await new Promise((resolve, reject) => {
+                            this.sqliteDb.run(`
+                                INSERT INTO recebiveis_cartao_locais (id, venda_id, caixa_id, parcela_numero, valor_parcela, data_prevista_recebimento, status, sincronizado, deletado)
+                                VALUES (?, ?, ?, ?, ?, ?, 'P', 0, 0)
+                            `, [idRecebivel, idVenda, caixaId, i, valorPorParcela, dataPrevistaStr], (err) => {
+                                if (err) reject(err); else resolve();
+                            });
+                        });
+                    }
+                } catch (errCCLite) {
+                    console.error("[ERRO CRITICO - registrarVenda (Gerar recebiveis cartao SQLite)]:", errCCLite.message);
+                    throw new Error("Falha interna ao desmembrar parcelas de cartao local.");
+                }
+            }
+
+            // 3. REPLICAÇÃO EM TEMPO REAL PRO POSTGRESQL (SE ONLINE)
+            if (this.isOnline) {
+                try {
+                    if (!empIdGlobal) throw new Error("Dados de governanca (Empresa ID) ausentes no escopo.");
+
+                    const escopoVendas = this.obterEscopoTabela('vendas');
+                    const filialPgValor = (escopoVendas === 'COMPARTILHADO') ? null : filIdGlobal;
+
+                    console.log("[POSTGRES] Replicando venda pai no servidor remoto...");
+                    
+                    // Aplicado cast explicito nos campos UUID e TIMESTAMP para adequacao estrita
+                    const queryPG = `
+                        INSERT INTO vendas (id, caixa_id, operador_id, cliente_id, forma_pagamento,起源, total, descricao_movimento, data_venda, bandeira, parcelas, empresa_id, filial_id) 
+                        VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5, $6, $7, $8, $9::timestamp, $10, $11, $12::uuid, $13::uuid)
+                    `;
+                    await this.pgClient.query(queryPG, [idVenda, caixaId, operadorId, clienteId, formaPagamento, origem, total, descricaoMovimento, dataAtual, bandeira, parcelas, empIdGlobal, filialPgValor]);
+                    
+                    // UPLOAD DAS MÚLTIPLAS PARCELAS DE CREDIÁRIO PRO POSTGRES
+                    if (formaPagamento === 'CR') {
+                        console.log("[POSTGRES] Replicando parcelas de crediario no servidor remoto...");
+                        const contasLocais = await new Promise((resolve) => {
+                            this.sqliteDb.all(`SELECT * FROM contas_a_receber_locais WHERE venda_id = ?`, [idVenda], (err, rows) => resolve(rows || []));
+                        });
+                        
+                        const escopoCR = this.obterEscopoTabela('contas_a_receber');
+                        const filialCRPgValor = (escopoCR === 'COMPARTILHADO') ? null : filIdGlobal;
+
+                        let nrParcela = 1;
+                        for (const conta of contasLocais) {
+                            const queryCRPostgres = `
+                                INSERT INTO contas_a_receber (id, empresa_id, filial_id, venda_id, cliente_id, parcela_numero, total_parcelas, data_emissao, data_vencimento, valor_original, valor_juros, valor_multa, valor_pago, saldo_restante, status, deletado)
+                                VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5::uuid, $6, $7, $8::timestamp, $9::date, $10, 0.00, 0.00, 0.00, $11, 'P', false)
+                            `;
+                            
+                            await this.pgClient.query(queryCRPostgres, [
+                                conta.id, empIdGlobal, filialCRPgValor, idVenda, clienteId,
+                                nrParcela, parcelas, dataAtual, conta.data_vencimento, conta.valor_original, conta.valor_original
+                            ]);
+
+                            this.sqliteDb.run(`UPDATE contas_a_receber_locais SET sincronizado = 1 WHERE id = ?`, [conta.id]);
+                            nrParcela++;
+                        }
+                    }
+
+                    if (formaPagamento === 'CC') {
+                        console.log("[POSTGRES] Replicando parcelas de cartao no servidor remoto...");
+                        const escopoRecebiveis = this.obterEscopoTabela('recebiveis_cartao');
+                        const filialRecPgValor = (escopoRecebiveis === 'COMPARTILHADO') ? null : filIdGlobal;
+
+                        const recebiveis = await new Promise((resolve) => {
+                            this.sqliteDb.all(`SELECT * FROM recebiveis_cartao_locais WHERE venda_id = ?`, [idVenda], (err, rows) => resolve(rows || []));
+                        });
+                        for (const rec of recebiveis) {
+                            await this.pgClient.query(`INSERT INTO recebiveis_cartao (id, venda_id, caixa_id, parcela_numero, valor_parcela, data_prevista_recebimento, status, empresa_id, filial_id) VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5, $6::timestamp, 'P', $7::uuid, $8::uuid)`, [rec.id, idVenda, caixaId, rec.parcela_numero, rec.valor_parcela, rec.data_prevista_recebimento, empIdGlobal, filialRecPgValor]);
+                            this.sqliteDb.run(`UPDATE recebiveis_cartao_locais SET sincronizado = 1 WHERE id = ?`, [rec.id]);
+                        }
+                    }
+
+                    this.sqliteDb.run(`UPDATE vendas_locais SET sincronizado = 1 WHERE id = ?`, [idVenda]);
+                    console.log("[BANCO] Fluxo completo de faturamento online concluido com exito.");
+                    return { status: 'sucesso', modo: 'ONLINE', id: idVenda };
+                    
+                } catch (err) {
+                    console.error("[BANCO] Erro ao espelhar transacao no Postgres, operando em contingencia:", err.message);
+                    this.isOnline = false;
+                }
+            }
+
+            console.log("[BANCO] Fluxo concluido em modo de contingencia offline.");
+            return { status: 'sucesso', modo: 'OFFLINE (SQLite)', id: idVenda };
+
+        } catch (errGlobal) {
+            console.error("[ERRO CRITICO - registrarVenda FATAL]: Excecao nao tratada no pipeline de vendas:", errGlobal.message);
+            return { status: 'erro', mensagem: errGlobal.message };
+        }
     }
 
     async verificarConexaoPostgres() {
@@ -894,353 +1191,500 @@ class DatabaseManager {
     }
 
     async sincronizarVendasPendentes() {
-        if (!this.isOnline) return { status: 'offline' };
+        try {
+            if (!this.isOnline) {
+                console.log("[SYNC] Execucao abortada: O sistema encontra-se em modo offline.");
+                return { status: 'offline' };
+            }
 
-        // 🌟 VALIDAÇÃO DE SEGURANÇA: Garante que as variáveis globais de governança em memória estejam disponíveis
-        const empIdGlobal = this.tenantEmpresaId;
-        const filIdGlobal = this.tenantFilialId;
+            // VALIDACAO DE SEGURANCA: Garante que as variaveis globais de governanca em memoria estejam disponiveis
+            const empIdGlobal = this.tenantEmpresaId;
+            const filIdGlobal = this.tenantFilialId;
 
-        if (!empIdGlobal) {
-            console.error("[SYNC] Abortado: IDs de governança (Empresa) não carregados no escopo global.");
-            return { status: 'erro', mensagem: 'Governança ausente em memória.' };
-        }
+            if (!empIdGlobal) {
+                console.error("[SYNC] Abortado: IDs de governanca (Empresa) nao carregados no escopo global.");
+                return { status: 'erro', mensagem: 'Governança ausente em memoria.' };
+            }
 
-        return new Promise((resolve) => {
-            this.sqliteDb.all(`SELECT * FROM vendas_locais WHERE sincronizado = 0`, [], async (err, vendasPendentes) => {
-                if (err) {
-                    console.error("[SYNC] Erro ao ler SQLite:", err);
-                    return resolve({ status: 'erro' });
-                }
-
-                if (vendasPendentes.length === 0) {
-                    return resolve({ status: 'limpo', total: 0 }); 
-                }
-
-                console.log(`[SYNC] Sincronizando ${vendasPendentes.length} atualizações de forma otimizada com a nuvem...`);
-
-                try {
-                    
-                    // 🌟 NOVO: Busca direto do cache em memória instantaneamente
-                    const escopoVendas = this.obterEscopoTabela('vendas');
-                    const filialPgValor = (escopoVendas === 'COMPARTILHADO') ? null : filIdGlobal;
-
-                    for (const venda of vendasPendentes) {
-                        const estaDeletadoPG = (venda.deletado === 1);
-
-                        const queryVendaPG = `
-                            INSERT INTO vendas (id, caixa_id, operador_id, cliente_id, forma_pagamento, origem, total, descricao_movimento, data_venda, deletado, bandeira, parcelas, empresa_id, filial_id)
-                            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
-                            ON CONFLICT (id) DO UPDATE SET deletado = excluded.deletado
-                        `;
-                        
-                        const clientePgValor = (venda.cliente_id === 'CONSUMIDOR-FINAL' || !venda.cliente_id)
-                            ? '00000000-0000-0000-0000-000000000000' 
-                            : venda.cliente_id;
-
-                        // 1. Faz o upload da Venda Pai no Postgres utilizando as variáveis em memória
-                        await this.pgClient.query(queryVendaPG, [
-                            venda.id, venda.caixa_id, venda.operador_id, clientePgValor, 
-                            venda.forma_pagamento, venda.origem, venda.total, venda.descricao_movimento, 
-                            venda.data_venda, estaDeletadoPG, venda.bandeira, venda.parcelas, 
-                            empIdGlobal, filialPgValor
-                        ]);
-                        
-                        // =====================================================================
-                        // 🌟 Sincronização Dinâmica de Recebíveis (CC)
-                        // =====================================================================
-                        if (venda.forma_pagamento === 'CC') {
-                            // 🌟 NOVO: Busca direto do cache em memória
-                            const escopoRecebiveis = this.obterEscopoTabela('recebiveis_cartao');
-                            const filialRecPgValor = (escopoRecebiveis === 'COMPARTILHADO') ? null : filIdGlobal;
-
-                            const recebiveis = await new Promise((resolve) => {
-                                this.sqliteDb.all(`SELECT * FROM recebiveis_cartao_locais WHERE venda_id = ?`, [venda.id], (err, rows) => resolve(rows || []));
-                            });
-
-                            for (const r of recebiveis) {
-                                const queryRecPG = `
-                                    INSERT INTO recebiveis_cartao (id, venda_id, caixa_id, parcela_numero, valor_parcela, data_prevista_recebimento, status, deletado, empresa_id, filial_id)
-                                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-                                    ON CONFLICT (id) DO UPDATE SET status = excluded.status, deletado = excluded.deletado
-                                `;
-                                
-                                await this.pgClient.query(queryRecPG, [r.id, venda.id, venda.caixa_id, r.parcela_numero, r.valor_parcela, r.data_prevista_recebimento, r.status, r.deletado === 1, empIdGlobal, filialRecPgValor]);
-                                this.sqliteDb.run(`UPDATE recebiveis_cartao_locais SET sincronizado = 1 WHERE id = ?`, [r.id]);
-                            }
-                        }
-
-                        // =====================================================================
-                        // 📊 Sincronização de Múltiplas Parcelas do Crediário (CR)
-                        // =====================================================================
-                        if (venda.forma_pagamento === 'CR') {
-                            const contasLocais = await new Promise((resolve) => {
-                                this.sqliteDb.all(`SELECT * FROM contas_a_receber_locais WHERE venda_id = ? AND sincronizado = 0`, [venda.id], (err, rows) => resolve(rows || []));
-                            });
-
-                            if (contasLocais.length > 0) {
-                                // 🌟 NOVO: Busca direto do cache em memória
-                                const escopoCR = this.obterEscopoTabela('contas_a_receber');
-                                const filialCRPgValor = (escopoCR === 'COMPARTILHADO') ? null : filIdGlobal;
-
-                                let nrP = 1;
-                                for (const conta of contasLocais) {
-                                    const queryCRPostgres = `
-                                        INSERT INTO contas_a_receber (id, empresa_id, filial_id, venda_id, cliente_id, parcela_numero, total_parcelas, data_emissao, data_vencimento, valor_original, valor_juros, valor_multa, valor_pago, saldo_restante, status, deletado)
-                                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 0.00, 0.00, 0.00, $11, 'P', false)
-                                        ON CONFLICT (id) DO UPDATE SET status = excluded.status
-                                    `;
-                                    
-                                    await this.pgClient.query(queryCRPostgres, [
-                                        conta.id, empIdGlobal, filialCRPgValor, venda.id, venda.cliente_id,
-                                        nrP, venda.parcelas, venda.data_venda, conta.data_vencimento, conta.valor_original, conta.valor_original
-                                    ]);
-
-                                    this.sqliteDb.run(`UPDATE contas_a_receber_locais SET sincronizado = 1 WHERE id = ?`, [conta.id]);
-                                    nrP++;
-                                }
-                            }
-                        }
-
-                        // 2. Com a venda pai e todas as parcelas seguras na nuvem, marca a venda local como sincronizada
-                        this.sqliteDb.run(`UPDATE vendas_locais SET sincronizado = 1 WHERE id = ?`, [venda.id]);
+            console.log("[SYNC] Buscando vendas pendentes de sincronizacao no SQLite local...");
+            return await new Promise((resolve) => {
+                this.sqliteDb.all(`SELECT * FROM vendas_locais WHERE sincronizado = 0`, [], async (err, vendasPendentes) => {
+                    if (err) {
+                        console.error("[SYNC] Erro ao ler registros da tabela vendas_locais no SQLite:", err.message);
+                        return resolve({ status: 'erro' });
                     }
 
-                    console.log(`[SYNC] Sincronização e auditoria concluídas com sucesso!`);
-                    resolve({ status: 'sucesso', total: vendasPendentes.length });
+                    if (vendasPendentes.length === 0) {
+                        console.log("[SYNC] Nao foram encontradas vendas pendentes locais para upload.");
+                        return resolve({ status: 'limpo', total: 0 }); 
+                    }
 
-                } catch (error) {
-                    console.error("[SYNC] Erro no lote de envio:", error.message);
-                    this.isOnline = false;
-                    resolve({ status: 'erro_rede' });
-                }
+                    console.log(`[SYNC] Sincronizando ${vendasPendentes.length} atualizacoes de forma otimizada com a nuvem...`);
+
+                    try {
+                        // Busca direto do cache em memória instantaneamente
+                        const escopoVendas = this.obterEscopoTabela('vendas');
+                        const filialPgValor = (escopoVendas === 'COMPARTILHADO') ? null : filIdGlobal;
+
+                        for (const venda of vendasPendentes) {
+                            const estaDeletadoPG = (venda.deletado === 1);
+
+                            // Aplicados os casts explicitos ::uuid e ::timestamp para blindagem do motor do Postgres
+                            const queryVendaPG = `
+                                INSERT INTO vendas (id, caixa_id, operador_id, cliente_id, forma_pagamento, origem, total, descricao_movimento, data_venda, deletado, bandeira, parcelas, empresa_id, filial_id)
+                                VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5, $6, $7, $8, $9::timestamp, $10, $11, $12, $13::uuid, $14::uuid)
+                                ON CONFLICT (id) DO UPDATE SET deletado = excluded.deletado
+                            `;
+                            
+                            const clientePgValor = (venda.cliente_id === 'CONSUMIDOR-FINAL' || !venda.cliente_id)
+                                ? '00000000-0000-0000-0000-000000000000' 
+                                : venda.cliente_id;
+
+                            // 1. Faz o upload da Venda Pai no Postgres utilizando as variáveis em memória
+                            await this.pgClient.query(queryVendaPG, [
+                                venda.id, venda.caixa_id, venda.operador_id, clientePgValor, 
+                                venda.forma_pagamento, venda.origem, venda.total, venda.descricao_movimento, 
+                                venda.data_venda, estaDeletadoPG, venda.bandeira, venda.parcelas, 
+                                empIdGlobal, filialPgValor
+                            ]);
+                            
+                            // =====================================================================
+                            // Sincronizacao Dinamica de Recebiveis (CC)
+                            // =====================================================================
+                            if (venda.forma_pagamento === 'CC') {
+                                try {
+                                    const escopoRecebiveis = this.obterEscopoTabela('recebiveis_cartao');
+                                    const filialRecPgValor = (escopoRecebiveis === 'COMPARTILHADO') ? null : filIdGlobal;
+
+                                    const recebiveis = await new Promise((resolveRec, rejectRec) => {
+                                        this.sqliteDb.all(`SELECT * FROM recebiveis_cartao_locais WHERE venda_id = ?`, [venda.id], (errRec, rows) => {
+                                            if (errRec) rejectRec(errRec);
+                                            else resolveRec(rows || []);
+                                        });
+                                    });
+
+                                    for (const r of recebiveis) {
+                                        const queryRecPG = `
+                                            INSERT INTO recebiveis_cartao (id, venda_id, caixa_id, parcela_numero, valor_parcela, data_prevista_recebimento, status, deletado, empresa_id, filial_id)
+                                            VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5, $6::timestamp, $7, $8, $9::uuid, $10::uuid)
+                                            ON CONFLICT (id) DO UPDATE SET status = excluded.status, deletado = excluded.deletado
+                                        `;
+                                        
+                                        await this.pgClient.query(queryRecPG, [r.id, venda.id, venda.caixa_id, r.parcela_numero, r.valor_parcela, r.data_prevista_recebimento, r.status, r.deletado === 1, empIdGlobal, filialRecPgValor]);
+                                        
+                                        this.sqliteDb.run(`UPDATE recebiveis_cartao_locais SET sincronizado = 1 WHERE id = ?`, [r.id]);
+                                    }
+                                } catch (errCC) {
+                                    console.error(`[ERRO - SYNC (Lote Recebiveis Venda ID ${venda.id})]:`, errCC.message);
+                                    throw errCC; // Rejeita para interromper o laco e marcar falha de rede
+                                }
+                            }
+
+                            // =====================================================================
+                            // Sincronizacao de Multiplas Parcelas do Crediario (CR)
+                            // =====================================================================
+                            if (venda.forma_pagamento === 'CR') {
+                                try {
+                                    const contasLocais = await new Promise((resolveCR, rejectCR) => {
+                                        this.sqliteDb.all(`SELECT * FROM contas_a_receber_locais WHERE venda_id = ? AND sincronizado = 0`, [venda.id], (errCR, rows) => {
+                                            if (errCR) rejectCR(errCR);
+                                            else resolveCR(rows || []);
+                                        });
+                                    });
+
+                                    if (contasLocais.length > 0) {
+                                        const escopoCR = this.obterEscopoTabela('contas_a_receber');
+                                        const filialCRPgValor = (escopoCR === 'COMPARTILHADO') ? null : filIdGlobal;
+
+                                        let nrP = 1;
+                                        for (const conta of contasLocais) {
+                                            const queryCRPostgres = `
+                                                INSERT INTO contas_a_receber (id, empresa_id, filial_id, venda_id, cliente_id, parcela_numero, total_parcelas, data_emissao, data_vencimento, valor_original, valor_juros, valor_multa, valor_pago, saldo_restante, status, deletado)
+                                                VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5::uuid, $6, $7, $8::timestamp, $9::date, $10, 0.00, 0.00, 0.00, $11, 'P', false)
+                                                ON CONFLICT (id) DO UPDATE SET status = excluded.status
+                                            `;
+                                            
+                                            await this.pgClient.query(queryCRPostgres, [
+                                                conta.id, empIdGlobal, filialCRPgValor, venda.id, venda.cliente_id,
+                                                nrP, venda.parcelas, venda.data_venda, conta.data_vencimento, conta.valor_original, conta.valor_original
+                                            ]);
+
+                                            this.sqliteDb.run(`UPDATE contas_a_receber_locais SET sincronizado = 1 WHERE id = ?`, [conta.id]);
+                                            nrP++;
+                                        }
+                                    }
+                                } catch (errCR) {
+                                    console.error(`[ERRO - SYNC (Lote Crediario Venda ID ${venda.id})]:`, errCR.message);
+                                    throw errCR;
+                                }
+                            }
+
+                            // 2. Com a venda pai e todas as parcelas seguras na nuvem, marca a venda local como sincronizada
+                            this.sqliteDb.run(`UPDATE vendas_locais SET sincronizado = 1 WHERE id = ?`, [venda.id]);
+                        }
+
+                        console.log("[SYNC] Sincronizacao e auditoria concluidas com sucesso!");
+                        resolve({ status: 'sucesso', total: vendasPendentes.length });
+
+                    } catch (error) {
+                        console.error("[SYNC] Erro detectado no lote de envio para a nuvem:", error.message);
+                        this.isOnline = false;
+                        resolve({ status: 'erro_rede' });
+                    }
+                });
             });
-        });
+
+        } catch (errGlobal) {
+            console.error("[ERRO CRITICO - sincronizarVendasPendentes FATAL]: Excecao nao tratada no background worker:", errGlobal.message);
+            return { status: 'erro', mensagem: errGlobal.message };
+        }
     }
 
     async obterResumoTurnoAtual(caixaId) {
-        let movimiento = null;
-        
-        if (this.isOnline) {
-            try {
-                const res = await this.pgClient.query(
-                    `SELECT id, valor_abertura, data_abertura FROM movimentos_caixa WHERE caixa_id = $1 AND status = 'A' AND deletado = false LIMIT 1`, 
-                    [caixaId]
-                );
-                if (res.rows.length > 0) movimiento = res.rows[0];
-            } catch (err) { 
-                // 🌟 REVELA O ERRO SE A BUSCA DE MOVIMENTO FALHAR
-                console.error("[FALHA SILENCIOSA - RESUMO TURNO (MOVIMENTO)]:", err.message);
-                this.isOnline = false; 
-            }
-        }
-        
-        if (!movimiento) {
-            movimiento = await new Promise((resolve) => {
-                this.sqliteDb.get(
-                    `SELECT id, valor_abertura, data_abertura FROM movimentos_caixa_locais WHERE caixa_id = ? AND status = 'A' AND deletado = 0`, 
-                    [caixaId], (err, row) => resolve(row)
-                );
-            });
-        }
-
-        if (!movimiento) return { status: 'erro', mensagem: 'Nenhum turno aberto encontrado para este caixa.' };
-
-        const dataAberturaTurno = movimiento.data_abertura;
-
-        let vendas = [];
-        if (this.isOnline) {
-            try {
-                const queryPG = `
-                    SELECT origem, total, forma_pagamento FROM vendas 
-                    WHERE caixa_id = $1 AND data_venda >= $2 AND deletado = false
-                `;
-                const res = await this.pgClient.query(queryPG, [caixaId, dataAberturaTurno]);
-                vendas = res.rows;
-            } catch (err) { 
-                // 🌟 REVELA O ERRO SE A LISTAGEM DE VENDAS DO RESUMO FALHAR
-                console.error("[FALHA SILENCIOSA - RESUMO TURNO (VENDAS)]:", err.message);
-                this.isOnline = false; 
-            }
-        }
-        
-        if (!this.isOnline) {
-            vendas = await new Promise((resolve) => {
-                const queryLite = `
-                    SELECT origem, total, forma_pagamento FROM vendas_locais 
-                    WHERE caixa_id = ? AND data_venda >= ? AND deletado = 0
-                `;
-                this.sqliteDb.all(queryLite, [caixaId, dataAberturaTurno], (err, rows) => resolve(rows || []));
-            });
-        }
-
-        let totalEntradas = 0;
-        let totalSaidas = 0;
-
-        const detalheFormas = {
-            DN: { nome: 'Dinheiro', entradas: 0, saidas: 0 },
-            CC: { nome: 'Cartão de Crédito', entradas: 0, saidas: 0 },
-            CD: { nome: 'Cartão de Débito', entradas: 0, saidas: 0 },
-            PX: { nome: 'Pix', entradas: 0, saidas: 0 }
-        };
-
-        vendas.forEach(v => {
-            const valor = parseFloat(v.total);
-            const forma = v.forma_pagamento;
-
-            if (detalheFormas[forma]) {
-                if (v.origem === 'E') {
-                    totalEntradas += valor;
-                    detalheFormas[forma].entradas += valor;
-                } else if (v.origem === 'S') {
-                    totalSaidas += valor;
-                    detalheFormas[forma].saidas += valor;
+        try {
+            console.log("[BANCO] Iniciando levantamento do resumo do turno atual...");
+            let movimento = null;
+            
+            if (this.isOnline) {
+                try {
+                    console.log("[POSTGRES] Buscando metadados do turno ativo no servidor remoto...");
+                    // Aplicado cast explicito ::uuid para alcancar compatibilidade estrita com a coluna do Postgres
+                    const queryMov = `SELECT id, valor_abertura, data_abertura FROM movimentos_caixa WHERE caixa_id = $1::uuid AND status = 'A' AND deletado = false LIMIT 1`;
+                    const res = await this.pgClient.query(queryMov, [caixaId]);
+                    if (res.rows.length > 0) {
+                        movimento = res.rows[0];
+                    }
+                } catch (err) { 
+                    console.error("[ERRO - obterResumoTurnoAtual (Buscar Movimento Postgres)]:", err.message);
+                    this.isOnline = false; 
                 }
             }
-        });
+            
+            if (!movimento) {
+                try {
+                    console.log("[BANCO] Buscando metadados do turno ativo no SQLite local...");
+                    movimento = await new Promise((resolve, reject) => {
+                        const queryLiteMov = `SELECT id, valor_abertura, data_abertura FROM movimentos_caixa_locais WHERE caixa_id = ? AND status = 'A' AND deletado = 0`;
+                        this.sqliteDb.get(queryLiteMov, [caixaId], (err, row) => {
+                            if (err) reject(err);
+                            else resolve(row || null);
+                        });
+                    });
+                } catch (errLiteMov) {
+                    console.error("[ERRO - obterResumoTurnoAtual (Buscar Movimento SQLite)]:", errLiteMov.message);
+                }
+            }
 
-        const fundoInicial = parseFloat(movimento.valor_abertura);
-        const saldoFinal = fundoInicial + totalEntradas - totalSaidas;
+            if (!movimento) {
+                console.log("[BANCO] Resumo abortado: Nenhum turno aberto localizado para este caixa.");
+                return { status: 'erro', mensagem: 'Nenhum turno aberto encontrado para este caixa.' };
+            }
 
-        return {
-            movimentoId: movimento.id,
-            fundoInicial,
-            totalEntradas,
-            totalSaidas,
-            saldoFinal,
-            detalheFormas: Object.values(detalheFormas)
-        };
+            const dataAberturaTurno = movimento.data_abertura;
+            let vendas = [];
+
+            if (this.isOnline) {
+                try {
+                    console.log("[POSTGRES] Coletando lote de vendas do turno no servidor remoto...");
+                    // Aplicados os casts explicitos ::uuid e ::timestamp para correspondencia de tipos no Postgres
+                    const queryPG = `
+                        SELECT origem, total, forma_pagamento FROM vendas 
+                        WHERE caixa_id = $1::uuid AND data_venda >= $2::timestamp AND deletado = false
+                    `;
+                    const res = await this.pgClient.query(queryPG, [caixaId, dataAberturaTurno]);
+                    vendas = res.rows;
+                } catch (err) { 
+                    console.error("[ERRO - obterResumoTurnoAtual (Listar Vendas Postgres)]:", err.message);
+                    this.isOnline = false; 
+                }
+            }
+            
+            if (!this.isOnline) {
+                try {
+                    console.log("[BANCO] Coletando lote de vendas do turno no SQLite local...");
+                    vendas = await new Promise((resolve, reject) => {
+                        const queryLite = `
+                            SELECT origem, total, forma_pagamento FROM vendas_locais 
+                            WHERE caixa_id = ? AND data_venda >= ? AND deletado = 0
+                        `;
+                        this.sqliteDb.all(queryLite, [caixaId, dataAberturaTurno], (err, rows) => {
+                            if (err) reject(err);
+                            else resolve(rows || []);
+                        });
+                    });
+                } catch (errLiteSales) {
+                    console.error("[ERRO - obterResumoTurnoAtual (Listar Vendas SQLite)]:", errLiteSales.message);
+                    vendas = []; // Força inicialização em caso de falha física de leitura
+                }
+            }
+
+            console.log(`[BANCO] Processando somatorio financeiro sobre ${vendas.length} lancamentos localizados...`);
+            let totalEntradas = 0;
+            let totalSaidas = 0;
+
+            const detalheFormas = {
+                DN: { nome: 'Dinheiro', entradas: 0, saidas: 0 },
+                CC: { nome: 'Cartao de Credito', entradas: 0, saidas: 0 },
+                CD: { nome: 'Cartao de Debito', entradas: 0, saidas: 0 },
+                PX: { nome: 'Pix', entradas: 0, saidas: 0 }
+            };
+
+            try {
+                vendas.forEach(v => {
+                    const valor = parseFloat(v.total || 0);
+                    const forma = v.forma_pagamento;
+
+                    if (detalheFormas[forma]) {
+                        if (v.origem === 'E') {
+                            totalEntradas += valor;
+                            detalheFormas[forma].entradas += valor;
+                        } else if (v.origem === 'S') {
+                            totalSaidas += valor;
+                            detalheFormas[forma].saidas += valor;
+                        }
+                    }
+                });
+            } catch (errCalc) {
+                console.error("[ERRO - obterResumoTurnoAtual (Iteracao/Calculo de Valores)]:", errCalc.message);
+                throw new Error("Falha interna ao totalizar valores monetarios do turno.");
+            }
+
+            const fundoInicial = parseFloat(movimento.valor_abertura || 0);
+            const saldoFinal = fundoInicial + totalEntradas - totalSaidas;
+
+            console.log("[BANCO] Resumo financeiro do turno consolidado com sucesso.");
+            return {
+                movimentoId: movimento.id,
+                fundoInicial,
+                totalEntradas,
+                totalSaidas,
+                saldoFinal,
+                detalheFormas: Object.values(detalheFormas)
+            };
+
+        } catch (errGlobal) {
+            console.error("[ERRO CRITICO - obterResumoTurnoAtual FATAL]: Excecao nao tratada:", errGlobal.message);
+            return { status: 'erro', mensagem: errGlobal.message };
+        }
     }
 
     async fecharCaixa(movimentoId, operadorFechamentoId, valorFechamento, valorContado, diferenca) {
-        // 🌟 CORREÇÃO: Data de fechamento baseada no horário local
-        const dataAtual = obterDataHoraLocalANSI();
-
-        if (this.isOnline) {
+        try {
+            console.log("[BANCO] Iniciando processo de fechamento de turno de caixa...");
+            
+            let dataAtual = null;
             try {
-                // Atualiza o Postgres na nuvem incluindo os valores de conferência
-                const queryPG = `
-                    UPDATE movimentos_caixa 
-                    SET status = 'F', data_fechamento = $1, operador_fechamento_id = $2, 
-                        valor_fechamento = $3, valor_contado = $4, diferenca = $5
-                    WHERE id = $6
-                `;
-                await this.pgClient.query(queryPG, [dataAtual, operadorFechamentoId, valorFechamento, valorContado, diferenca, movimentoId]);
-            } catch (err) { this.isOnline = false; }
-        }
-
-        const jaSincronizadoFec = this.isOnline ? 1 : 0; // 🌟 Se fechou direto na nuvem, marca como sincronizado local
-
-        return new Promise((resolve, reject) => {
-            const queryLite = `
-                UPDATE movimentos_caixa_locais 
-                SET status = 'F', data_fechamento = ?, operador_fechamento_id = ?, 
-                    valor_fechamento = ?, valor_contado = ?, diferenca = ?, sincronizado = ?
-                WHERE id = ?
-            `;
-            this.sqliteDb.run(queryLite, [dataAtual, operadorFechamentoId, valorFechamento, valorContado, diferenca, jaSincronizadoFec, movimentoId], (err) => {
-                if (err) reject(err);
-                else resolve({ status: 'sucesso' });
-            });
-        });
-    }
-
-    async excluirLancamento(vendaId) {
-        // 1. Se estiver online, atualiza na nuvem
-        if (this.isOnline) {
-            try {
-                // Marca a venda como deletada no Postgres
-                const queryPG = `UPDATE vendas SET deletado = true WHERE id = $1`;
-                await this.pgClient.query(queryPG, [vendaId]);
-                
-                // Marca as parcelas como deletadas no Postgres
-                await this.pgClient.query(`UPDATE recebiveis_cartao SET deletado = true WHERE venda_id = $1`, [vendaId]);
-
-                // Se tudo subiu para a nuvem com sucesso, atualiza o SQLite local como sincronizado
-                this.sqliteDb.run(`UPDATE vendas_locais SET deletado = 1, sincronizado = 1 WHERE id = ?`, [vendaId]);
-                this.sqliteDb.run(`UPDATE recebiveis_cartao_locais SET deletado = 1, sincronizado = 1 WHERE venda_id = ?`, [vendaId]);
-                
-                console.log(`[BANCO] Lançamento ${vendaId} e seus recebíveis marcados como deletados no Postgres e SQLite.`);
-                return { status: 'sucesso' };
-
-            } catch (err) {
-                console.error("[BANCO] Erro ao excluir no Postgres, operando local:", err.message);
-                this.isOnline = false; // Cai para o modo offline para concluir a operação localmente
+                dataAtual = obterDataHoraLocalANSI();
+            } catch (errParams) {
+                console.error("[ERRO - fecharCaixa (Obter Data Local)]:", errParams.message);
+                throw new Error("Falha interna ao gerar data de fechamento para o turno.");
             }
-        }
 
-        // 2. Modo de contingência offline (Se a internet cair ou o bloco acima falhar)
-        return new Promise((resolve, reject) => {
-            this.sqliteDb.serialize(() => {
-                this.sqliteDb.run("BEGIN TRANSACTION");
+            if (this.isOnline) {
+                try {
+                    console.log("[POSTGRES] Atualizando status do turno para fechado no servidor remoto...");
+                    
+                    // Aplicados os casts explicitos ::timestamp e ::uuid para evitar incompatibilidades de tipo no Postgres
+                    const queryPG = `
+                        UPDATE movimentos_caixa 
+                        SET status = 'F', data_fechamento = $1::timestamp, operador_fechamento_id = $2::uuid, 
+                            valor_fechamento = $3, valor_contado = $4, diferenca = $5
+                        WHERE id = $6::uuid
+                    `;
+                    await this.pgClient.query(queryPG, [dataAtual, operadorFechamentoId, valorFechamento, valorContado, diferenca, movimentoId]);
+                    console.log("[BANCO] Turno de caixa encerrado com sucesso no PostgreSQL.");
+                } catch (err) { 
+                    console.error("[ERRO - fecharCaixa (Postgres Remote)]:", err.message);
+                    this.isOnline = false; 
+                }
+            }
 
-                this.sqliteDb.run(`UPDATE vendas_locais SET deletado = 1, sincronizado = 0 WHERE id = ?`, [vendaId]);
-                this.sqliteDb.run(`UPDATE recebiveis_cartao_locais SET deletado = 1, sincronizado = 0 WHERE venda_id = ?`, [vendaId]);
+            const jaSincronizadoFec = this.isOnline ? 1 : 0; // Se fechou direto na nuvem, marca como sincronizado local
 
-                this.sqliteDb.run("COMMIT", (err) => {
+            console.log("[BANCO] Atualizando status do turno na base local SQLite...");
+            return await new Promise((resolve, reject) => {
+                const queryLite = `
+                    UPDATE movimentos_caixa_locais 
+                    SET status = 'F', data_fechamento = ?, operador_fechamento_id = ?, 
+                        valor_fechamento = ?, valor_contado = ?, diferenca = ?, sincronizado = ?
+                    WHERE id = ?
+                `;
+                this.sqliteDb.run(queryLite, [dataAtual, operadorFechamentoId, valorFechamento, valorContado, diferenca, jaSincronizadoFec, movimentoId], (err) => {
                     if (err) {
-                        console.error("[BANCO] Erro ao atualizar exclusão no SQLite:", err);
+                        console.error("[ERRO - fecharCaixa (Query SQLite)]:", err.message);
                         reject(err);
                     } else {
-                        console.log(`[BANCO] Lançamento ${vendaId} e recebíveis marcados para exclusão local (Pendente de Sync).`);
+                        console.log(`[BANCO] Turno de caixa fechado localmente com sucesso (Sincronizado: ${jaSincronizadoFec}).`);
                         resolve({ status: 'sucesso' });
                     }
                 });
             });
-        });
+
+        } catch (errGlobal) {
+            console.error("[ERRO CRITICO - fecharCaixa FATAL]: Excecao nao tratada na rotina de fechamento de turno:", errGlobal.message);
+            return { status: 'erro', mensagem: errGlobal.message };
+        }
+    }
+
+    async excluirLancamento(vendaId) {
+        try {
+            console.log("[BANCO] Iniciando processo de exclusao de lancamento...");
+
+            // 1. Se estiver online, atualiza na nuvem
+            if (this.isOnline) {
+                try {
+                    console.log("[POSTGRES] Executando soft delete da venda e recebiveis no servidor remoto...");
+                    
+                    // Marca a venda como deletada no Postgres utilizando cast explicito ::uuid
+                    const queryPG = `UPDATE vendas SET deletado = true WHERE id = $1::uuid`;
+                    await this.pgClient.query(queryPG, [vendaId]);
+                    
+                    // Marca as parcelas como deletadas no Postgres utilizando cast explicito ::uuid
+                    await this.pgClient.query(`UPDATE recebiveis_cartao SET deletado = true WHERE venda_id = $1::uuid`, [vendaId]);
+
+                    try {
+                        console.log("[BANCO] Replicando marcacao de exclusao sincronizada no SQLite local...");
+                        // Se tudo subiu para a nuvem com sucesso, atualiza o SQLite local como sincronizado
+                        await new Promise((resolve, reject) => {
+                            this.sqliteDb.serialize(() => {
+                                this.sqliteDb.run("BEGIN TRANSACTION");
+                                this.sqliteDb.run(`UPDATE vendas_locais SET deletado = 1, sincronizado = 1 WHERE id = ?`, [vendaId]);
+                                this.sqliteDb.run(`UPDATE recebiveis_cartao_locais SET deletado = 1, sincronizado = 1 WHERE venda_id = ?`, [vendaId]);
+                                this.sqliteDb.run("COMMIT", (err) => {
+                                    if (err) reject(err);
+                                    else resolve();
+                                });
+                            });
+                        });
+                    } catch (errLiteSync) {
+                        console.error("[ERRO - excluirLancamento (Atualizar Status Sync SQLite)]:", errLiteSync.message);
+                        // Nao interrompe o fluxo principal de retorno pois o dado ja está salvo na nuvem
+                    }
+                    
+                    console.log(`[BANCO] Lancamento ${vendaId} e seus recebiveis marcados como deletados no Postgres e SQLite.`);
+                    return { status: 'sucesso' };
+
+                } catch (err) {
+                    console.error("[BANCO] Erro ao excluir no Postgres, mudando para contingencia local:", err.message);
+                    this.isOnline = false; // Cai para o modo offline para concluir a operação localmente
+                }
+            }
+
+            // 2. Modo de contingência offline (Se a internet cair ou o bloco acima falhar)
+            console.log("[BANCO] Gravando marcacao de exclusao pendente de sincronizacao no SQLite local...");
+            return await new Promise((resolve, reject) => {
+                this.sqliteDb.serialize(() => {
+                    this.sqliteDb.run("BEGIN TRANSACTION");
+
+                    this.sqliteDb.run(`UPDATE vendas_locais SET deletado = 1, sincronizado = 0 WHERE id = ?`, [vendaId]);
+                    this.sqliteDb.run(`UPDATE recebiveis_cartao_locais SET deletado = 1, sincronizado = 0 WHERE venda_id = ?`, [vendaId]);
+
+                    this.sqliteDb.run("COMMIT", (err) => {
+                        if (err) {
+                            console.error("[BANCO] Erro ao atualizar exclusao pendente no SQLite:", err.message);
+                            this.sqliteDb.run("ROLLBACK", () => {
+                                reject(err);
+                            });
+                        } else {
+                            console.log(`[BANCO] Lancamento ${vendaId} e recebiveis marcados para exclusao local (Pendente de Sync).`);
+                            resolve({ status: 'sucesso' });
+                        }
+                    });
+                });
+            });
+
+        } catch (errGlobal) {
+            console.error("[ERRO CRITICO - excluirLancamento FATAL]: Excecao nao tratada na rotina de exclusao:", errGlobal.message);
+            return { status: 'erro', mensagem: errGlobal.message };
+        }
     }
 
     async listarVendasTurnoAtual(caixaId) {
-        let movimiento = null;
-        if (this.isOnline) {
-            try {
-                // Cast apenas no parâmetro string $1 para a coluna UUID do caixa
-                const res = await this.pgClient.query(`SELECT data_abertura FROM movimentos_caixa WHERE caixa_id = $1::uuid AND status = 'A' AND deletado = false LIMIT 1`, [caixaId]);
-                if (res.rows.length > 0) movimiento = res.rows[0];
-            } catch (err) { 
-                console.error("[ERRO CRÍTICO POSTGRES - BUSCAR ABERTURA TURNO]:", err.message);
-                this.isOnline = false; 
-            }
-        }
-        if (!movimiento) {
-            movimiento = await new Promise((resolve) => {
-                this.sqliteDb.get(`SELECT data_abertura FROM movimentos_caixa_locais WHERE caixa_id = ? AND status = 'A'  AND deletado = 0`, [caixaId], (err, row) => resolve(row));
-            });
-        }
-        if (!movimiento) return [];
+        try {
+            console.log("[BANCO] Iniciando listagem de vendas do turno atual...");
+            let movimiento = null;
 
-        if (this.isOnline) {
-            try {
-                // 🌟 QUERY LIMPA: Como cliente_id agora é UUID no Postgres, o JOIN com c.id funciona direto!
-                const queryPostgresTurno = `
+            if (this.isOnline) {
+                try {
+                    console.log("[POSTGRES] Buscando data de abertura do turno ativo...");
+                    // Cast apenas no parametro string $1 para a coluna UUID do caixa
+                    const res = await this.pgClient.query(`SELECT data_abertura FROM movimentos_caixa WHERE caixa_id = $1::uuid AND status = 'A' AND deletado = false LIMIT 1`, [caixaId]);
+                    if (res.rows.length > 0) {
+                        movimento = res.rows[0];
+                    }
+                } catch (err) { 
+                    console.error("[ERRO CRITICO POSTGRES - BUSCAR ABERTURA TURNO]:", err.message);
+                    this.isOnline = false; 
+                }
+            }
+
+            if (!movimiento) {
+                try {
+                    console.log("[BANCO] Buscando data de abertura do turno ativo no SQLite local...");
+                    movimento = await new Promise((resolve, reject) => {
+                        this.sqliteDb.get(`SELECT data_abertura FROM movimentos_caixa_locais WHERE caixa_id = ? AND status = 'A'  AND deletado = 0`, [caixaId], (err, row) => {
+                            if (err) reject(err);
+                            else resolve(row || null);
+                        });
+                    });
+                } catch (errLiteMov) {
+                    console.error("[ERRO - listarVendasTurnoAtual (Buscar Turno SQLite)]:", errLiteMov.message);
+                }
+            }
+
+            if (!movimiento) {
+                console.log("[BANCO] Nenhuma venda listada: Turno aberto nao localizado para este caixa.");
+                return [];
+            }
+
+            if (this.isOnline) {
+                try {
+                    console.log("[POSTGRES] Consultando historico de vendas do turno no servidor remoto...");
+                    // QUERY LIMPA: Como cliente_id agora e UUID no Postgres, o JOIN com c.id funciona direto!
+                    const queryPostgresTurno = `
+                        SELECT 
+                            v.id, v.origem, v.total, v.forma_pagamento, v.descricao_movimento, v.bandeira, v.parcelas, 
+                            COALESCE(c.nome, 'CONSUMIDOR FINAL') as cliente_nome 
+                        FROM vendas v 
+                        LEFT JOIN clientes c ON c.id = v.cliente_id 
+                        WHERE v.caixa_id = $1::uuid 
+                        AND v.data_venda >= $2::timestamp 
+                        AND v.deletado = false 
+                        ORDER BY v.data_venda DESC
+                    `;
+                    const res = await this.pgClient.query(queryPostgresTurno, [caixaId, movimiento.data_abertura]);
+                    return res.rows;
+                } catch (err) { 
+                    console.error("[ERRO CRITICO POSTGRES - LISTAR VENDAS TURNO]:", err.message);
+                    this.isOnline = false; 
+                }
+            }
+            
+            console.log("[BANCO] Consultando historico de vendas do turno no SQLite local...");
+            return await new Promise((resolve) => {
+                this.sqliteDb.all(`
                     SELECT 
                         v.id, v.origem, v.total, v.forma_pagamento, v.descricao_movimento, v.bandeira, v.parcelas, 
                         COALESCE(c.nome, 'CONSUMIDOR FINAL') as cliente_nome 
-                    FROM vendas v 
-                    LEFT JOIN clientes c ON c.id = v.cliente_id 
-                    WHERE v.caixa_id = $1::uuid 
-                      AND v.data_venda >= $2::timestamp 
-                      AND v.deletado = false 
+                    FROM vendas_locais v 
+                    LEFT JOIN clientes_locais c ON c.id = v.cliente_id 
+                    WHERE v.caixa_id = ? AND v.data_venda >= ? AND v.deletado = 0 
                     ORDER BY v.data_venda DESC
-                `;
-                const res = await this.pgClient.query(queryPostgresTurno, [caixaId, movimiento.data_abertura]);
-                return res.rows;
-            } catch (err) { 
-                console.error("[ERRO CRÍTICO POSTGRES - LISTAR VENDAS TURNO]:", err.message);
-                this.isOnline = false; 
-            }
+                `, [caixaId, movimiento.data_abertura], (err, rows) => {
+                    if (err) {
+                        console.error("[ERRO - listarVendasTurnoAtual (Listar Vendas SQLite)]:", err.message);
+                        resolve([]);
+                    } else {
+                        console.log(`[BANCO] Listagem local concluida. ${rows ? rows.length : 0} registros retornados.`);
+                        resolve(rows || []);
+                    }
+                });
+            });
+
+        } catch (errGlobal) {
+            console.error("[ERRO CRITICO - listarVendasTurnoAtual FATAL]: Excecao nao tratada na listagem do grid:", errGlobal.message);
+            return [];
         }
-        
-        return new Promise((resolve) => {
-            this.sqliteDb.all(`
-                SELECT 
-                    v.id, v.origem, v.total, v.forma_pagamento, v.descricao_movimento, v.bandeira, v.parcelas, 
-                    COALESCE(c.nome, 'CONSUMIDOR FINAL') as cliente_nome 
-                FROM vendas_locais v 
-                LEFT JOIN clientes_locais c ON c.id = v.cliente_id 
-                WHERE v.caixa_id = ? AND v.data_venda >= ? AND v.deletado = 0 
-                ORDER BY v.data_venda DESC
-            `, [caixaId, movimiento.data_abertura], (err, rows) => resolve(rows || []));
-        });
     }
 
     async obterHistoricoTurnos(dataInicio, dataFim) {
@@ -1360,163 +1804,265 @@ class DatabaseManager {
 
     // 📊 Retorna o total de linhas e itens pendentes de sincronização do SQLite local
     async obterStatusSincronizacao() {
-        const tabelas = {
-            vendas: 'vendas_locais',
-            turnos: 'movimentos_caixa_locais',
-            recebiveis: 'recebiveis_cartao_locais',
-            // 🌟 ADICIONADO: Vincula a tabela de crediário local no contador de auditoria
-            crediario: 'contas_a_receber_locais'
-        };
-        const resultado = {};
+        try {
+            console.log("[BANCO] Iniciando contagem dos status de sincronizacao local...");
+            
+            const tabelas = {
+                vendas: 'vendas_locais',
+                turnos: 'movimentos_caixa_locais',
+                recebiveis: 'recebiveis_cartao_locais',
+                crediario: 'contas_a_receber_locais'
+            };
+            const resultado = {};
 
-        for (const [chave, nomeTabela] of Object.entries(tabelas)) {
-            resultado[chave] = await new Promise((resolve) => {
-                this.sqliteDb.get(
-                    `SELECT COUNT(*) as total, SUM(CASE WHEN sincronizado = 0 THEN 1 ELSE 0 END) as pendentes FROM ${nomeTabela}`,
-                    [],
-                    (err, row) => {
-                        resolve({
-                            total: row ? row.total : 0,
-                            pendentes: row ? (row.pendentes || 0) : 0
-                        });
-                    }
-                );
-            });
+            for (const [chave, nomeTabela] of Object.entries(tabelas)) {
+                try {
+                    resultado[chave] = await new Promise((resolve, reject) => {
+                        this.sqliteDb.get(
+                            `SELECT COUNT(*) as total, SUM(CASE WHEN sincronizado = 0 THEN 1 ELSE 0 END) as pendentes FROM ${nomeTabela}`,
+                            [],
+                            (err, row) => {
+                                if (err) {
+                                    reject(err);
+                                } else {
+                                    resolve({
+                                        total: row ? row.total : 0,
+                                        pendentes: row ? (row.pendentes || 0) : 0
+                                    });
+                                }
+                            }
+                        );
+                    });
+                } catch (errTable) {
+                    console.error(`[ERRO - obterStatusSincronizacao (Tabela: ${nomeTabela})]:`, errTable.message);
+                    // Define valor zerado seguro em caso de erro na tabela para nao corromper o retorno das demais
+                    resultado[chave] = { total: 0, pendentes: 0 };
+                }
+            }
+
+            console.log("[BANCO] Auditoria de sincronizacao concluida com sucesso.");
+            return resultado;
+
+        } catch (errGlobal) {
+            console.error("[ERRO CRITICO - obterStatusSincronizacao FATAL]: Excecao nao tratada na contagem de pendencias:", errGlobal.message);
+            return {
+                vendas: { total: 0, pendentes: 0 },
+                turnos: { total: 0, pendentes: 0 },
+                recebiveis: { total: 0, pendentes: 0 },
+                crediario: { total: 0, pendentes: 0 }
+            };
         }
-        return resultado;
     }
 
     // 🔄 Executa a sincronização manual por tabela e retorna uma lista de strings de log para a tela
     async sincronizarTabelaManual(tipo) {
-        if (!this.isOnline || !this.pgClient) {
-            throw new Error("Sem conexão ativa com o servidor PostgreSQL central.");
-        }
-        
-        // 🌟 REAPROVEITAMENTO DAS VARIÁVEIS GLOBAIS DE GOVERNANÇA EM MEMÓRIA
-        const empIdGlobal = this.tenantEmpresaId;
-        const filIdGlobal = this.tenantFilialId;
-
-        if (!empIdGlobal) {
-            throw new Error("Erro de escopo: Identificadores de governança do terminal não estão carregados na sessão.");
-        }
-
-        const logs = [];
-        logs.push(`[${new Date().toLocaleTimeString()}] 🚀 Iniciando sincronização da tabela: ${tipo.toUpperCase()}`);
-
-        if (tipo === 'vendas') {
-            const pendentes = await new Promise((resolve) => {
-                this.sqliteDb.all(`SELECT * FROM vendas_locais WHERE sincronizado = 0`, [], (err, rows) => resolve(rows || []));
-            });
-            logs.push(`[INFO] Encontrados ${pendentes.length} lançamentos pendentes.`);
+        try {
+            if (!this.isOnline || !this.pgClient) {
+                console.log("[SYNC-MANUAL] Falha: Tentativa de execucao sem conexao ativa com o Postgres.");
+                throw new Error("Sem conexao ativa com o servidor PostgreSQL central.");
+            }
             
-            const escopoVendas = this.obterEscopoTabela('vendas');
-            const filialPgValor = (escopoVendas === 'COMPARTILHADO') ? null : filIdGlobal;
+            // REAPROVEITAMENTO DAS VARIÁVEIS GLOBAIS DE GOVERNANÇA EM MEMÓRIA
+            const empIdGlobal = this.tenantEmpresaId;
+            const filIdGlobal = this.tenantFilialId;
 
-            for (const v of pendentes) {
-                const estaDeletadoPG = (v.deletado === 1);
+            if (!empIdGlobal) {
+                console.log("[SYNC-MANUAL] Falha: Parametros de governanca ausentes no escopo.");
+                throw new Error("Erro de escopo: Identificadores de governanca do terminal nao estao carregados na sessao.");
+            }
 
-                const queryPG = `
-                    INSERT INTO vendas (id, caixa_id, operador_id, cliente_id, forma_pagamento, origem, total, descricao_movimento, data_venda, deletado, bandeira, parcelas, empresa_id, filial_id)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
-                    ON CONFLICT (id) DO UPDATE SET deletado = excluded.deletado
-                `;
+            const logs = [];
+            logs.push(`[${new Date().toLocaleTimeString()}] 🚀 Iniciando sincronizacao da tabela: ${tipo.toUpperCase()}`);
+
+            if (tipo === 'vendas') {
+                let pendentes = [];
+                try {
+                    console.log("[SYNC-MANUAL] Coletando vendas pendentes no SQLite local...");
+                    pendentes = await new Promise((resolve, reject) => {
+                        this.sqliteDb.all(`SELECT * FROM vendas_locais WHERE sincronizado = 0`, [], (err, rows) => {
+                            if (err) reject(err);
+                            else resolve(rows || []);
+                        });
+                    });
+                } catch (errLite) {
+                    console.error("[ERRO - sincronizarTabelaManual (Ler vendas SQLite)]:", errLite.message);
+                    logs.push(`[ERRO CRITICO] Falha ao ler a tabela vendas_locais: ${errLite.message}`);
+                    throw errLite;
+                }
+
+                logs.push(`[INFO] Encontrados ${pendentes.length} lancamentos pendentes.`);
                 
-                const clientePgValor = (v.cliente_id === 'CONSUMIDOR-FINAL' || !v.cliente_id)
-                    ? '00000000-0000-0000-0000-000000000000' 
-                    : v.cliente_id;
+                const escopoVendas = this.obterEscopoTabela('vendas');
+                const filialPgValor = (escopoVendas === 'COMPARTILHADO') ? null : filIdGlobal;
+
+                for (const v of pendentes) {
+                    try {
+                        const estaDeletadoPG = (v.deletado === 1);
+
+                        // Aplicados casts explicitos ::uuid e ::timestamp para blindagem do Postgres
+                        const queryPG = `
+                            INSERT INTO vendas (id, caixa_id, operador_id, cliente_id, forma_pagamento, origem, total, descricao_movimento, data_venda, deletado, bandeira, parcelas, empresa_id, filial_id)
+                            VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5, $6, $7, $8, $9::timestamp, $10::boolean, $11, $12, $13::uuid, $14::uuid)
+                            ON CONFLICT (id) DO UPDATE SET deletado = excluded.deletado
+                        `;
                         
-                await this.pgClient.query(queryPG, [v.id, v.caixa_id, v.operador_id, clientePgValor, v.forma_pagamento, v.origem, v.total, v.descricao_movimento, v.data_venda, estaDeletadoPG, v.bandeira, v.parcelas, empIdGlobal, filialPgValor]);
-                this.sqliteDb.run(`UPDATE vendas_locais SET sincronizado = 1 WHERE id = ?`, [v.id]);
-                logs.push(`[SUCESSO] Lançamento ID ${v.id.substring(0,8)}... espelhado com a nuvem.`);
+                        const clientePgValor = (v.cliente_id === 'CONSUMIDOR-FINAL' || !v.cliente_id)
+                            ? '00000000-0000-0000-0000-000000000000' 
+                            : v.cliente_id;
+                                
+                        await this.pgClient.query(queryPG, [v.id, v.caixa_id, v.operador_id, clientePgValor, v.forma_pagamento, v.origem, v.total, v.descricao_movimento, v.data_venda, estaDeletadoPG, v.bandeira, v.parcelas, empIdGlobal, filialPgValor]);
+                        
+                        this.sqliteDb.run(`UPDATE vendas_locais SET sincronizado = 1 WHERE id = ?`, [v.id]);
+                        logs.push(`[SUCESSO] Lancamento ID ${v.id.substring(0,8)}... espelhado com a nuvem.`);
+                    } catch (errLoopVenda) {
+                        console.error(`[ERRO - sincronizarTabelaManual (Lote Venda ID ${v.id})]:`, errLoopVenda.message);
+                        logs.push(`[FALHA] Nao foi possivel espelhar a venda ID ${v.id.substring(0,8)}: ${errLoopVenda.message}`);
+                    }
+                }
             }
-        }
-        else if (tipo === 'turnos') {
-            const pendentes = await new Promise((resolve) => {
-                this.sqliteDb.all(`SELECT * FROM movimentos_caixa_locais WHERE sincronizado = 0`, [], (err, rows) => resolve(rows || []));
-            });
-            logs.push(`[INFO] Encontrados ${pendentes.length} fechamentos de turnos pendentes.`);
+            else if (tipo === 'turnos') {
+                let pendentes = [];
+                try {
+                    console.log("[SYNC-MANUAL] Coletando turnos pendentes no SQLite local...");
+                    pendentes = await new Promise((resolve, reject) => {
+                        this.sqliteDb.all(`SELECT * FROM movimentos_caixa_locais WHERE sincronizado = 0`, [], (err, rows) => {
+                            if (err) reject(err);
+                            else resolve(rows || []);
+                        });
+                    });
+                } catch (errLite) {
+                    console.error("[ERRO - sincronizarTabelaManual (Ler movimentos_caixa SQLite)]:", errLite.message);
+                    logs.push(`[ERRO CRITICO] Falha ao ler a tabela movimentos_caixa_locais: ${errLite.message}`);
+                    throw errLite;
+                }
 
-            const escopoTurnos = this.obterEscopoTabela('movimentos_caixa');
-            const filialPgValor = (escopoTurnos === 'COMPARTILHADO') ? null : filIdGlobal;
+                logs.push(`[INFO] Encontrados ${pendentes.length} fechamentos de turnos pendentes.`);
 
-            for (const t of pendentes) {
+                const escopoTurnos = this.obterEscopoTabela('movimentos_caixa');
+                const filialPgValor = (escopoTurnos === 'COMPARTILHADO') ? null : filIdGlobal;
 
-                const queryPG = `
-                    INSERT INTO movimentos_caixa (id, caixa_id, operador_abertura_id, operador_fechamento_id, data_abertura, data_fechamento, valor_abertura, valor_fechamento, valor_contado, diferenca, status, deletado, empresa_id, filial_id)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
-                    ON CONFLICT (id) DO UPDATE SET status = excluded.status, data_fechamento = excluded.data_fechamento, valor_fechamento = excluded.valor_fechamento, valor_contado = excluded.valor_contado, diferenca = excluded.diferenca
-                `;
-                await this.pgClient.query(queryPG, [t.id, t.caixa_id, t.operador_abertura_id, t.operador_fechamento_id, t.data_abertura, t.data_fechamento, t.valor_abertura, t.valor_fechamento, t.valor_contado, t.diferenca, t.status, t.deletado === 1, empIdGlobal, filialPgValor]);
-                
-                await new Promise((resolve) => {
-                    this.sqliteDb.run(`UPDATE movimentos_caixa_locais SET sincronizado = 1 WHERE id = ?`, [t.id], () => resolve());
-                });
+                for (const t of pendentes) {
+                    try {
+                        // Aplicados casts explicitos ::uuid, ::timestamp e ::boolean para blindagem do Postgres
+                        const queryPG = `
+                            INSERT INTO movimentos_caixa (id, caixa_id, operador_abertura_id, operador_fechamento_id, data_abertura, data_fechamento, valor_abertura, valor_fechamento, valor_contado, diferenca, status, deletado, empresa_id, filial_id)
+                            VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5::timestamp, $6::timestamp, $7, $8, $9, $10, $11, $12::boolean, $13::uuid, $14::uuid)
+                            ON CONFLICT (id) DO UPDATE SET status = excluded.status, data_fechamento = excluded.data_fechamento, valor_fechamento = excluded.valor_fechamento, valor_contado = excluded.valor_contado, diferenca = excluded.diferenca
+                        `;
+                        await this.pgClient.query(queryPG, [t.id, t.caixa_id, t.operador_abertura_id, t.operador_fechamento_id, t.data_abertura, t.data_fechamento, t.valor_abertura, t.valor_fechamento, t.valor_contado, t.diferenca, t.status, t.deletado === 1, empIdGlobal, filialPgValor]);
+                        
+                        await new Promise((resolve) => {
+                            this.sqliteDb.run(`UPDATE movimentos_caixa_locais SET sincronizado = 1 WHERE id = ?`, [t.id], () => resolve());
+                        });
 
-                logs.push(`[SUCESSO] Turno ID ${t.id.substring(0,8)}... atualizado no PostgreSQL e marcado localmente.`);
+                        logs.push(`[SUCESSO] Turno ID ${t.id.substring(0,8)}... atualizado no PostgreSQL e marcado localmente.`);
+                    } catch (errLoopTurno) {
+                        console.error(`[ERRO - sincronizarTabelaManual (Lote Turno ID ${t.id})]:`, errLoopTurno.message);
+                        logs.push(`[FALHA] Nao foi possivel espelhar o turno ID ${t.id.substring(0,8)}: ${errLoopTurno.message}`);
+                    }
+                }
             }
-        }
-        else if (tipo === 'recebiveis') {
-            const pendentes = await new Promise((resolve) => {
-                this.sqliteDb.all(`SELECT * FROM recebiveis_cartao_locais WHERE sincronizado = 0`, [], (err, rows) => resolve(rows || []));
-            });
-            logs.push(`[INFO] Encontrados ${pendentes.length} recebíveis de cartão pendentes.`);
+            else if (tipo === 'recebiveis') {
+                let pendentes = [];
+                try {
+                    console.log("[SYNC-MANUAL] Coletando recebiveis pendentes no SQLite local...");
+                    pendentes = await new Promise((resolve, reject) => {
+                        this.sqliteDb.all(`SELECT * FROM recebiveis_cartao_locais WHERE sincronizado = 0`, [], (err, rows) => {
+                            if (err) reject(err);
+                            else resolve(rows || []);
+                        });
+                    });
+                } catch (errLite) {
+                    console.error("[ERRO - sincronizarTabelaManual (Ler recebiveis SQLite)]:", errLite.message);
+                    logs.push(`[ERRO CRITICO] Falha ao ler a tabela recebiveis_cartao_locais: ${errLite.message}`);
+                    throw errLite;
+                }
 
-            const escopoRecebiveis = this.obterEscopoTabela('recebiveis_cartao');
-            const filialRecPgValor = (escopoRecebiveis === 'COMPARTILHADO') ? null : filIdGlobal;
+                logs.push(`[INFO] Encontrados ${pendentes.length} recebiveis de cartao pendentes.`);
 
-            for (const r of pendentes) {
+                const escopoRecebiveis = this.obterEscopoTabela('recebiveis_cartao');
+                const filialRecPgValor = (escopoRecebiveis === 'COMPARTILHADO') ? null : filIdGlobal;
 
-                const queryPG = `
-                    INSERT INTO recebiveis_cartao (id, venda_id, caixa_id, parcela_numero, valor_parcela, data_prevista_recebimento, status, deletado, empresa_id, filial_id)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-                    ON CONFLICT (id) DO UPDATE SET status = excluded.status, deletado = excluded.deletado
-                `;
-                await this.pgClient.query(queryPG, [r.id, r.venda_id, r.caixa_id, r.parcela_numero, r.valor_parcela, r.data_prevista_recebimento, r.status, r.deletado === 1, empIdGlobal, filialRecPgValor]);
-                this.sqliteDb.run(`UPDATE recebiveis_cartao_locais SET sincronizado = 1 WHERE id = ?`, [r.id]);
-                logs.push(`[SUCESSO] Recebível ID ${r.id.substring(0,8)}... espelhado com a nuvem.`);
+                for (const r of pendentes) {
+                    try {
+                        // Aplicados casts explicitos ::uuid, ::timestamp e ::boolean para blindagem do Postgres
+                        const queryPG = `
+                            INSERT INTO recebiveis_cartao (id, venda_id, caixa_id, parcela_numero, valor_parcela, data_prevista_recebimento, status, deletado, empresa_id, filial_id)
+                            VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5, $6::timestamp, $7, $8::boolean, $9::uuid, $10::uuid)
+                            ON CONFLICT (id) DO UPDATE SET status = excluded.status, deletado = excluded.deletado
+                        `;
+                        await this.pgClient.query(queryPG, [r.id, r.venda_id, r.caixa_id, r.parcela_numero, r.valor_parcela, r.data_prevista_recebimento, r.status, r.deletado === 1, empIdGlobal, filialRecPgValor]);
+                        this.sqliteDb.run(`UPDATE recebiveis_cartao_locais SET sincronizado = 1 WHERE id = ?`, [r.id]);
+                        logs.push(`[SUCESSO] Recebivel ID ${r.id.substring(0,8)}... espelhado com a nuvem.`);
+                    } catch (errLoopRec) {
+                        console.error(`[ERRO - sincronizarTabelaManual (Lote Recebivel ID ${r.id})]:`, errLoopRec.message);
+                        logs.push(`[FALHA] Nao foi possivel espelhar o recebivel ID ${r.id.substring(0,8)}: ${errLoopRec.message}`);
+                    }
+                }
             }
-        }
-        else if (tipo === 'crediario') {
-            const pendentes = await new Promise((resolve) => {
-                this.sqliteDb.all(`SELECT * FROM contas_a_receber_locais WHERE sincronizado = 0`, [], (err, rows) => resolve(rows || []));
-            });
-            logs.push(`[INFO] Encontrados ${pendentes.length} títulos de parcelas de crediário pendentes.`);
+            else if (tipo === 'crediario') {
+                let pendentes = [];
+                try {
+                    console.log("[SYNC-MANUAL] Coletando crediarios pendentes no SQLite local...");
+                    pendentes = await new Promise((resolve, reject) => {
+                        this.sqliteDb.all(`SELECT * FROM contas_a_receber_locais WHERE sincronizado = 0`, [], (err, rows) => {
+                            if (err) reject(err);
+                            else resolve(rows || []);
+                        });
+                    });
+                } catch (errLite) {
+                    console.error("[ERRO - sincronizarTabelaManual (Ler crediario SQLite)]:", errLite.message);
+                    logs.push(`[ERRO CRITICO] Falha ao ler a tabela contas_a_receber_locais: ${errLite.message}`);
+                    throw errLite;
+                }
 
-            const escopoCR = this.obterEscopoTabela('contas_a_receber');
-            const filialCRPgValor = (escopoCR === 'COMPARTILHADO') ? null : filIdGlobal;
+                logs.push(`[INFO] Encontrados ${pendentes.length} titulos de parcelas de crediario pendentes.`);
 
-            for (const c of pendentes) {
+                const escopoCR = this.obterEscopoTabela('contas_a_receber');
+                const filialCRPgValor = (escopoCR === 'COMPARTILHADO') ? null : filIdGlobal;
 
-                // Captura metadados da venda pai para estruturar o total de parcelamento correto
-                const vendaPai = await new Promise((resolve) => {
-                    this.sqliteDb.get(`SELECT data_venda, parcelas FROM vendas_locais WHERE id = ?`, [c.venda_id], (err, row) => resolve(row));
-                });
-                const dataEmissao = vendaPai ? vendaPai.data_venda : obterDataHoraLocalANSI();
-                const totalParcelasVenda = vendaPai ? vendaPai.parcelas : 1;
+                for (const c of pendentes) {
+                    try {
+                        // Captura metadados da venda pai para estruturar o total de parcelamento correto
+                        const vendaPai = await new Promise((resolve) => {
+                            this.sqliteDb.get(`SELECT data_venda, parcelas FROM vendas_locais WHERE id = ?`, [c.venda_id], (err, row) => resolve(row));
+                        });
+                        const dataEmissao = vendaPai ? vendaPai.data_venda : obterDataHoraLocalANSI();
+                        const totalParcelasVenda = vendaPai ? vendaPai.parcelas : 1;
 
-                // Descobre a numeração de parcela fazendo contagem de registros anteriores da mesma venda
-                const ordemParcela = await new Promise((resolve) => {
-                    this.sqliteDb.get(`SELECT COUNT(*) as indexador FROM contas_a_receber_locais WHERE venda_id = ? AND id <= ?`, [c.venda_id, c.id], (err, row) => resolve(row ? row.indexador : 1));
-                });
+                        // Descobre a numeração de parcela fazendo contagem de registros anteriores da mesma venda
+                        const ordemParcela = await new Promise((resolve) => {
+                            this.sqliteDb.get(`SELECT COUNT(*) as indexador FROM contas_a_receber_locais WHERE venda_id = ? AND id <= ?`, [c.venda_id, c.id], (err, row) => resolve(row ? row.indexador : 1));
+                        });
 
-                const queryCRPostgres = `
-                    INSERT INTO contas_a_receber (id, empresa_id, filial_id, venda_id, cliente_id, parcela_numero, total_parcelas, data_emissao, data_vencimento, valor_original, valor_juros, valor_multa, valor_pago, saldo_restante, status, deletado)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 0.00, 0.00, 0.00, $11, 'P', false)
-                    ON CONFLICT (id) DO UPDATE SET status = excluded.status
-                `;
-                
-                await this.pgClient.query(queryCRPostgres, [
-                    c.id, empIdGlobal, filialCRPgValor, c.venda_id, c.cliente_id, 
-                    ordemParcela, totalParcelasVenda, dataEmissao, c.data_vencimento, c.valor_original, c.valor_original
-                ]);
-                
-                this.sqliteDb.run(`UPDATE contas_a_receber_locais SET sincronizado = 1 WHERE id = ?`, [c.id]);
-                logs.push(`[SUCESSO] Parcela ${ordemParcela}/${totalParcelasVenda} do Título ID ${c.id.substring(0,8)}... espelhada na nuvem.`);
+                        // Aplicados casts explicitos ::uuid, ::timestamp, ::date e ::boolean para blindagem do Postgres
+                        const queryCRPostgres = `
+                            INSERT INTO contas_a_receber (id, empresa_id, filial_id, venda_id, cliente_id, parcela_numero, total_parcelas, data_emissao, data_vencimento, valor_original, valor_juros, valor_multa, valor_pago, saldo_restante, status, deletado)
+                            VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5::uuid, $6, $7, $8::timestamp, $9::date, $10, 0.00, 0.00, 0.00, $11, 'P', false)
+                            ON CONFLICT (id) DO UPDATE SET status = excluded.status
+                        `;
+                        
+                        await this.pgClient.query(queryCRPostgres, [
+                            c.id, empIdGlobal, filialCRPgValor, c.venda_id, c.cliente_id, 
+                            ordemParcela, totalParcelasVenda, dataEmissao, c.data_vencimento, c.valor_original, c.valor_original
+                        ]);
+                        
+                        this.sqliteDb.run(`UPDATE contas_a_receber_locais SET sincronizado = 1 WHERE id = ?`, [c.id]);
+                        logs.push(`[SUCESSO] Parcela ${ordemParcela}/${totalParcelasVenda} do Titulo ID ${c.id.substring(0,8)}... espelhada na nuvem.`);
+                    } catch (errLoopCR) {
+                        console.error(`[ERRO - sincronizarTabelaManual (Lote Crediario ID ${c.id})]:`, errLoopCR.message);
+                        logs.push(`[FALHA] Nao foi possivel espelhar a parcela do crediario ID ${c.id.substring(0,8)}: ${errLoopCR.message}`);
+                    }
+                }
             }
-        }
 
-        logs.push(`[${new Date().toLocaleTimeString()}] ✅ Sincronização concluída com sucesso!`);
-        return logs;
+            logs.push(`[${new Date().toLocaleTimeString()}] ✅ Sincronizacao concluida com sucesso!`);
+            return logs;
+
+        } catch (errGlobal) {
+            console.error("[ERRO CRITICO - sincronizarTabelaManual FATAL]: Excecao nao tratada na rotina de sincronismo manual:", errGlobal.message);
+            return [`[ERRO FATAL - ${new Date().toLocaleTimeString()}] Ocorreu um erro geral nao tratado: ${errGlobal.message}`];
+        }
     }
 
 }
