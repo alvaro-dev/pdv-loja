@@ -486,6 +486,21 @@
         </div>
     </div>
 
+    <div id="modalImpressaoCrediario" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.5); z-index: 9999; justify-content: center; align-items: center;">
+        <div style="background-color: #ffffff; padding: 25px; border-radius: 8px; box-shadow: 0 4px 15px rgba(0,0,0,0.2); width: 100%; max-width: 420px; text-align: center; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;">
+            <div style="font-size: 40px; margin-bottom: 10px;">📋</div>
+            <h3 style="margin-top: 0; color: #333; font-size: 18px;">Venda no Crediário Registrada!</h3>
+            <p style="color: #666; font-size: 14px; margin-bottom: 25px; line-height: 1.4;">
+                Deseja emitir a Nota Promissória / Comprovante para colher a assinatura do cliente?
+            </p>
+            
+            <div style="display: flex; gap: 12px; justify-content: center;">
+                <button id="btnModalNaoPrint" style="margin-top: 0; padding: 10px 20px; background-color: #6c757d; font-size: 14px; width: 100px;">Não</button>
+                <button id="btnModalSimPrint" style="margin-top: 0; padding: 10px 20px; background-color: #007bff; font-size: 14px; width: 100px;">Sim</button>
+            </div>
+        </div>
+    </div>
+
     <script>
         const { ipcRenderer } = require('electron');
 
@@ -503,7 +518,6 @@
         let paginaAtualDet = 1;
         const itensPorPaginaDet = 50;
         
-        // 1. Inicialização, Identificação da Máquina e Login Automático Blindado
         // 1. Inicialização, Identificação da Máquina e Login Automático Totalmente Blindado
         window.addEventListener('DOMContentLoaded', async () => {
             console.log("🖥️ [BOOT-FRONT] Iniciando carregamento do DOM...");
@@ -533,85 +547,79 @@
             }
 
             try {
-                console.log("🔍 [BOOT-FRONT] Invocando carregamento de dados do caixa...");
-                const resposta = await ipcRenderer.invoke('carregar-caixa', caixaIdDaMaquina);
-                console.log("📦 [BOOT-FRONT] Retorno do carregar-caixa:", resposta);
+                // 🌟 CORREÇÃO MESTRE: Injeta o ID da máquina diretamente no input invisível da tela
+                // Sem chamar o 'carregar-caixa' prematuramente aqui, evitando o primeiro disparo de sync!
+                if (document.getElementById('caixaId')) document.getElementById('caixaId').value = caixaIdDaMaquina;
                 
-                if (resposta && resposta.status === 'sucesso') {
-                    if (document.getElementById('caixaId')) document.getElementById('caixaId').value = resposta.dados.id;
-                    if (document.getElementById('caixaDescricao')) document.getElementById('caixaDescricao').value = resposta.dados.descricao;
+                const badgeRede = document.getElementById('badgeRede');
+                if (badgeRede) {
+                    badgeRede.className = bancoEstaOnline ? 'badge-online' : 'msg-box offline';
+                    badgeRede.innerText = bancoEstaOnline ? 'ONLINE' : 'OFFLINE';
+                }
+                                
+                // 🤖 PROCESSAMENTO DO LOGIN AUTOMÁTICO (SE HOUVER)
+                console.log("📖 [BOOT-FRONT] Buscando lembrete de login no config.json...");
+                const loginAuto = await ipcRenderer.invoke('obter-lembrete-login');
+                console.log("📖 [BOOT-FRONT] Retorno do obter-lembrete-login:", loginAuto);
+                
+                if (loginAuto && loginAuto.status === 'sucesso') {
+                    console.log(`🚀 [BOOT-FRONT] Credenciais encontradas para o usuário "${loginAuto.usuario}". Disparando bypass...`);
+                    
+                    if (document.getElementById('loginUsuario')) document.getElementById('loginUsuario').value = loginAuto.usuario;
+                    if (document.getElementById('lembrarSenha')) document.getElementById('lembrarSenha').checked = true;
+                    
+                    // Envia para a validação do processo Main
+                    const respostaAuto = await ipcRenderer.invoke('tentar-login', { 
+                        usuario: loginAuto.usuario, 
+                        senha: loginAuto.senhaHash, 
+                        caixaId: caixaIdDaMaquina 
+                    });
 
-                    // Alimenta as variáveis globais de tenant na janela
-                    window.tenantEmpresaId = resposta.dados.empresa_id;
-                    window.tenantFilialId = resposta.dados.filial_id;
-                    
-                    if (document.getElementById('navCaixaDescricao')) document.getElementById('navCaixaDescricao').innerText = resposta.dados.descricao;
-                    if (document.getElementById('navEmpresaNome')) document.getElementById('navEmpresaNome').innerText = resposta.dados.empresa_nome || "Grupo Alfa Varejo"; 
-                    if (document.getElementById('navFilialNome')) document.getElementById('navFilialNome').innerText = resposta.dados.filial_nome || "Alfa Matriz";
-                    
-                    const badgeRede = document.getElementById('badgeRede');
-                    if (badgeRede) {
-                        badgeRede.className = bancoEstaOnline ? 'badge-online' : 'msg-box offline';
-                        badgeRede.innerText = bancoEstaOnline ? 'ONLINE' : 'OFFLINE';
-                    }
-                                    
-                    // 🤖 PROCESSAMENTO DO LOGIN AUTOMÁTICO
-                    console.log("📖 [BOOT-FRONT] Buscando lembrete de login no config.json...");
-                    const loginAuto = await ipcRenderer.invoke('obter-lembrete-login');
-                    console.log("📖 [BOOT-FRONT] Retorno do obter-lembrete-login:", loginAuto);
-                    
-                    if (loginAuto && loginAuto.status === 'sucesso') {
-                        console.log(`🚀 [BOOT-FRONT] Credenciais encontradas para o usuário "${loginAuto.usuario}". Disparando bypass...`);
+                    console.log("🔑 [BOOT-FRONT] Resposta do tentar-login automático:", respostaAuto);
+
+                    if (respostaAuto && respostaAuto.status === 'sucesso') {
+                        window.operadorLogado = respostaAuto.operador;
+                        if (document.getElementById('operadorId')) document.getElementById('operadorId').value = respostaAuto.operador.id;
+                        if (document.getElementById('navOperadorNome')) document.getElementById('navOperadorNome').innerText = respostaAuto.operador.nome;
                         
-                        if (document.getElementById('loginUsuario')) document.getElementById('loginUsuario').value = loginAuto.usuario;
-                        if (document.getElementById('lembrarSenha')) document.getElementById('lembrarSenha').checked = true;
-                        
-                        // Envia para a validação do processo Main (Garante a propriedade 'senha' esperada)
-                        const respostaAuto = await ipcRenderer.invoke('tentar-login', { 
-                            usuario: loginAuto.usuario, 
-                            senha: loginAuto.senhaHash, 
-                            caixaId: resposta.dados.id 
-                        });
+                        const ehAdmin = respostaAuto.operador.role === 'admin' || respostaAuto.operador.usuario === 'admin';
+                        if (document.getElementById('btnVerHistorico')) {
+                            document.getElementById('btnVerHistorico').style.display = ehAdmin ? 'block' : 'none';
+                        }
+                        if (document.getElementById('btnVerSincronizacao')) {
+                            document.getElementById('btnVerSincronizacao').style.display = ehAdmin ? 'block' : 'none';
+                        }
 
-                        console.log("🔑 [BOOT-FRONT] Resposta do tentar-login automático:", respostaAuto);
+                        // 🌟 SÓ DISPARA O CARREGAR E SYNC OFICIAL AQUI (APÓS SUCESSO DO LOGIN AUTOMÁTICO)
+                        const dadosCaixa = await ipcRenderer.invoke('carregar-caixa', caixaIdDaMaquina);
+                        if (dadosCaixa.status === 'sucesso') {
+                            if (document.getElementById('navCaixaDescricao')) document.getElementById('navCaixaDescricao').innerText = dadosCaixa.dados.descricao;
+                            if (document.getElementById('navEmpresaNome')) document.getElementById('navEmpresaNome').innerText = dadosCaixa.dados.empresa_nome || "Grupo Alfa Varejo"; 
+                            if (document.getElementById('navFilialNome')) document.getElementById('navFilialNome').innerText = dadosCaixa.dados.filial_nome || "Alfa Matriz";
+                        }
 
-                        if (respostaAuto && respostaAuto.status === 'sucesso') {
-                            window.operadorLogado = respostaAuto.operador;
-                            if (document.getElementById('operadorId')) document.getElementById('operadorId').value = respostaAuto.operador.id;
-                            if (document.getElementById('navOperadorNome')) document.getElementById('navOperadorNome').innerText = respostaAuto.operador.nome;
-                            
-                            const ehAdmin = respostaAuto.operador.role === 'admin' || respostaAuto.operador.usuario === 'admin';
-                            if (document.getElementById('btnVerHistorico')) {
-                                document.getElementById('btnVerHistorico').style.display = ehAdmin ? 'block' : 'none';
-                            }
-                            if (document.getElementById('btnVerSincronizacao')) {
-                                document.getElementById('btnVerSincronizacao').style.display = ehAdmin ? 'block' : 'none';
-                            }
+                        const caixaEstaAberto = await ipcRenderer.invoke('verificar-caixa-aberto', caixaIdDaMaquina);
+                        if (document.getElementById('telaLogin')) document.getElementById('telaLogin').style.display = 'none';
 
-                            const caixaEstaAberto = await ipcRenderer.invoke('verificar-caixa-aberto', resposta.dados.id);
-                            if (document.getElementById('telaLogin')) document.getElementById('telaLogin').style.display = 'none';
-
-                            if (caixaEstaAberto) {
-                                if (document.getElementById('navbarStatus')) document.getElementById('navbarStatus').style.display = 'flex';
-                                if (document.getElementById('telaCaixa')) document.getElementById('telaCaixa').style.display = 'block';
-                                await atualizarTabelaLancamentosJanela();
-                                if (document.getElementById('origem')) document.getElementById('origem').focus();
-                            } else {
-                                if (document.getElementById('telaAbertura')) document.getElementById('telaAbertura').style.display = 'block';
-                                if (document.getElementById('valorAbertura')) {
-                                    document.getElementById('valorAbertura').focus();
-                                    document.getElementById('valorAbertura').select();
-                                }
-                            }
+                        if (caixaEstaAberto) {
+                            if (document.getElementById('navbarStatus')) document.getElementById('navbarStatus').style.display = 'flex';
+                            if (document.getElementById('telaCaixa')) document.getElementById('telaCaixa').style.display = 'block';
+                            await atualizarTabelaLancamentosJanela();
+                            if (document.getElementById('origem')) document.getElementById('origem').focus();
                         } else {
-                            console.log("⚠️ [BOOT-FRONT] Falha na validação do login automático. Exibindo tela limpa.");
-                            resgatarLoginManual();
+                            if (document.getElementById('telaAbertura')) document.getElementById('telaAbertura').style.display = 'block';
+                            if (document.getElementById('valorAbertura')) {
+                                document.getElementById('valorAbertura').focus();
+                                document.getElementById('valorAbertura').select();
+                            }
                         }
                     } else {
-                        console.log("ℹ️ [BOOT-FRONT] Sem login automático agendado. Aguardando operador.");
+                        console.log("⚠️ [BOOT-FRONT] Falha na validação do login automático. Exibindo tela limpa.");
+                        resgatarLoginManual();
                     }
                 } else {
-                    exibirErroCaixaInvalido(resposta ? resposta.mensagem : "Erro desconhecido");
+                    console.log("ℹ️ [BOOT-FRONT] Sem login automático agendado. Aguardando operador.");
+                    resgatarLoginManual();
                 }
             } catch (err) {
                 console.error("❌ [BOOT-FRONT] Erro crítico no fluxo de renderização:", err.message);
@@ -1026,6 +1034,27 @@
                     statusDiv.innerText = `✅ Movimento salvo!\nModo: ${resposta.modo}`;
                     statusDiv.className = resposta.modo.includes('ONLINE') ? 'msg-box online' : 'msg-box offline';
                     
+                    // 🌟 NOVA ABORDAGEM ASSÍNCRONA COM MODAL HTML
+                    if (formaPagamento === 'CR') {
+                        const modal = document.getElementById('modalImpressaoCrediario');
+                        const btnSim = document.getElementById('btnModalSimPrint');
+                        const btnNao = document.getElementById('btnModalNaoPrint');
+                        
+                        // Exibe o modal na tela usando Flexbox para centralizar
+                        modal.style.display = 'flex';
+                        
+                        // Configura a ação do botão SIM
+                        btnSim.onclick = () => {
+                            ipcRenderer.send('imprimir-comprovante-crediario', resposta.id);
+                            modal.style.display = 'none'; // Fecha o modal
+                        };
+                        
+                        // Configura a ação do botão NÃO
+                        btnNao.onclick = () => {
+                            modal.style.display = 'none'; // Apenas fecha o modal
+                        };
+                    }
+
                     // Limpa os campos padrão após o sucesso
                     document.getElementById('total').value = "0.00";
                     document.getElementById('buscaCliente').value = "";
@@ -1305,8 +1334,7 @@
             }
         }
 
-        // 🎨 FUNÇÃO RESPONSÁVEL POR FATIAR E DESENHAR OS 50 LANÇAMENTOS DO DIA
-        // 🎨 FUNÇÃO RESPONSÁVEL POR FATIAR E DESENHAR OS 50 LANÇAMENTOS COM BOTÃO DE EXCLUSÃO RETORNADO
+        // 🎨 FUNÇÃO RESPONSÁVEL POR FATIAR E DESENHAR OS 50 LANÇAMENTOS COM NOME DO CLIENTE E REIMPRESSÃO CR
         function renderizarTabelaLancamentosPrincipal() {
             const corpoTabela = document.getElementById('tabelaLancamentosCorpo');
             if (!corpoTabela) return;
@@ -1314,7 +1342,6 @@
             corpoTabela.innerHTML = '';
 
             if (!dadosLancamentosCompletos || dadosLancamentosCompletos.length === 0) {
-                // Atualizado o colspan para 7 colunas por conta das novas adições
                 corpoTabela.innerHTML = `<tr><td colspan="7" style="padding: 15px; text-align: center; color: #888; font-style: italic;">Nenhum lançamento registrado neste turno.</td></tr>`;
                 document.getElementById('txtPaginaLanc').innerText = "Página 1 de 1";
                 return;
@@ -1336,14 +1363,13 @@
                     ? '<span style="color:green;font-weight:bold;">📥 Entrada</span>' 
                     : '<span style="color:red;font-weight:bold;">📤 Saída</span>';
                 
-                const formasNome = { DN: 'Dinheiro', CC: 'C. Crédito', CD: 'C. Débito', PX: 'Pix' };
+                const formasNome = { DN: 'Dinheiro', CC: 'C. Crédito', CD: 'C. Débito', PX: 'Pix', CR: 'Crediário' };
                 const formaTexto = formasNome[v.forma_pagamento] || v.forma_pagamento || 'Dinheiro';
                 
                 const estiloValor = (v.origem === 'E' || v.tipo_movimento === 'E') 
                     ? 'color: green; font-weight: bold;' 
                     : 'color: red; font-weight: bold;';
 
-                // 🌟 REGRA DO CARTÃO DE CRÉDITO: Se não for CC, desativa e deixa cinza suave
                 let bandeiraTexto = '—';
                 let parcelaTexto = '—';
                 let estiloColunaCartao = 'color: #888; font-style: italic; background-color: #fdfdfd;'; 
@@ -1352,6 +1378,31 @@
                     bandeiraTexto = v.bandeira || 'Não Inf.';
                     parcelaTexto = v.parcelas ? `${v.parcelas}x` : '1x';
                     estiloColunaCartao = 'color: #2b2b2b; font-weight: bold; font-style: normal;'; 
+                } else if (v.forma_pagamento === 'CR') {
+                    parcelaTexto = v.parcelas ? `${v.parcelas}x` : '1x';
+                    estiloColunaCartao = 'color: #2b2b2b; font-style: normal;';
+                }
+
+                // 🌟 EVOLUÇÃO: Se for crediário (CR), realça o nome do cliente nominal anexado ao documento
+                const clienteNomeResolvido = v.cliente_nome || 'CONSUMIDOR FINAL';
+                const descricaoExibicao = v.forma_pagamento === 'CR'
+                    ? `<b style="color: #0056b3;">[${clienteNomeResolvido}]</b><br><span style="font-size: 12px; color: #666;">${v.descricao_movimento || v.descricao || 'Venda de Produtos'}</span>`
+                    : `${v.descricao_movimento || v.descricao || 'Venda de Produtos'}`;
+
+                // 🌟 EVOLUÇÃO: Constrói os botões da célula de ação em bloco dinâmico
+                let botoesAcao = `
+                    <button onclick="dispararExclusao('${v.id}')" style="margin-top: 0; padding: 4px 8px; font-size: 12px; background-color: #dc3545; width: auto; font-weight: normal; border: none; color: white; border-radius: 4px; cursor: pointer;">
+                        🗑️ Excluir
+                    </button>
+                `;
+
+                // Se for Crediário, acopla o botão verde com o ícone de impressora térmico ao lado do botão excluir
+                if (v.forma_pagamento === 'CR') {
+                    botoesAcao += `
+                        <button onclick="reimprimirCrediario('${v.id}')" title="Reimprimir Comprovante / Promissória" style="margin-top: 0; padding: 4px 8px; font-size: 12px; background-color: #28a745; width: auto; font-weight: normal; margin-left: 6px; border: none; color: white; border-radius: 4px; cursor: pointer;">
+                            🖨️
+                        </button>
+                    `;
                 }
 
                 const linha = document.createElement('tr');
@@ -1362,13 +1413,13 @@
                     <td style="padding: 8px; border: 1px solid #dee2e6; font-size: 13px; ${estiloColunaCartao}">${bandeiraTexto}</td>
                     <td style="padding: 8px; border: 1px solid #dee2e6; font-size: 13px; text-align: center; ${estiloColunaCartao}">${parcelaTexto}</td>
                     
-                    <td style="padding: 8px; border: 1px solid #dee2e6; color: #555;">${v.descricao_movimento || v.descricao || 'Venda de Produtos'}</td>
+                    <td style="padding: 8px; border: 1px solid #dee2e6;">${descricaoExibicao}</td>
                     <td style="padding: 8px; border: 1px solid #dee2e6; ${estiloValor}">R$ ${parseFloat(v.total || v.valor || 0).toFixed(2)}</td>
                     
                     <td style="padding: 8px; border: 1px solid #dee2e6; text-align: center;">
-                        <button onclick="dispararExclusao('${v.id}')" style="margin-top: 0; padding: 4px 8px; font-size: 12px; background-color: #dc3545; width: auto; font-weight: normal;">
-                            🗑️ Excluir
-                        </button>
+                        <div style="display: flex; align-items: center; justify-content: center;">
+                            ${botoesAcao}
+                        </div>
                     </td>
                 `;
                 corpoTabela.appendChild(linha);
@@ -1989,6 +2040,12 @@
                 }
             }, 200); // Pequeno atraso para dar tempo de registrar o clique se for com mouse
         });
+
+        // Função chamada ao clicar no ícone da impressora verde na tabela
+        window.reimprimirCrediario = (vendaId) => {
+            // Dispara o mesmo canal IPC que já configuramos no main.js
+            ipcRenderer.send('imprimir-comprovante-crediario', vendaId);
+        };
     </script>
 </body>
 </html>

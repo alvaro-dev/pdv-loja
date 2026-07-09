@@ -26,6 +26,7 @@ class DatabaseManager {
         // 🌐 VARIÁVEIS GLOBAIS DE TENANT DO TERMINAL
         this.tenantEmpresaId = null;
         this.tenantFilialId = null;
+        this.escoposCache = {}; // 🌟 Cache global de escopos
 
         // No Windows, salva o arquivo .db na pasta AppData do usuário
         this.sqlitePath = path.join(app.getPath('userData'), 'pdv_local.db');
@@ -34,6 +35,13 @@ class DatabaseManager {
     // 🔒 Função auxiliar para criptografar a senha em SHA-256 antes de comparar ou salvar
     gerarHashSenha(senha) {
         return crypto.createHash('sha256').update(senha).digest('hex');
+    }
+
+    // 🌟 FUNÇÃO AUXILIAR: Retorna a regra de escopo direto da memória sem ir ao banco
+    obterEscopoTabela(tabelaNome) {
+        const nomeLimpo = String(tabelaNome).toLowerCase();
+        // Se a regra existir no cache, retorna ela, senão assume o padrão seguro 'EXCLUSIVO'
+        return this.escoposCache[nomeLimpo] || 'EXCLUSIVO';
     }
 
     async realizarLogin(usuario, senha, caixaId) {
@@ -273,9 +281,21 @@ class DatabaseManager {
                 connectionTimeoutMillis: 3000 //
             });
 
-            await this.pgClient.connect(); //
-            this.isOnline = true; //
+            await this.pgClient.connect();
+            this.isOnline = true;
             console.log("🔌 [DATABASE] Conectado ao PostgreSQL externo com sucesso!");
+
+            // 🌟 ADICIONADO: Carrega todas as regras de escopo na inicialização do sistema
+            this.escoposCache = {};
+            try {
+                const resEscopos = await this.pgClient.query("SELECT tabela_nome, escopo FROM tabelas_escopo");
+                resEscopos.rows.forEach(row => {
+                    this.escoposCache[row.tabela_nome.toLowerCase()] = String(row.escopo).toUpperCase();
+                });
+                console.log("📦 [DATABASE] Cache de regras de escopo carregado com sucesso:", this.escoposCache);
+            } catch (errEscopo) {
+                console.error("⚠️ Falha ao carregar tabela de escopos, usando padrões EXCLUSIVO:", errEscopo.message);
+            }
         } catch (err) {
             this.isOnline = false; //
             console.log(`⚠️ [DATABASE] Servidor Postgres inacessível (${err.message}). Modo OFFLINE ativo.`); //
@@ -397,18 +417,24 @@ class DatabaseManager {
     }
 
     async sincronizarOperadores() {
-        if (!this.isOnline || !this.pgClient) {
-            console.log("[SYNC] Sistema em modo offline. Pulando carga de operadores.");
-            return { status: 'offline', manager: 'Sem conexão estabelecida com o servidor.' };
-        }
+        if (!this.pgClient) return { status: 'offline' };
 
-        if (!this.tenantEmpresaId || !this.tenantFilialId) {
-            console.log("[SYNC] ⚠️ IDs de governança ausentes no boot. Abortando sync.");
-            return { status: 'erro', mensagem: 'IDs de governança ausentes no boot.' };
-        }
-
+        const pgTemp = new (require('pg').Client)({
+            host: this.pgClient.connectionParameters?.host || this.pgClient.options?.host,
+            database: this.pgClient.connectionParameters?.database || this.pgClient.options?.database,
+            user: this.pgClient.connectionParameters?.user || this.pgClient.options?.user,
+            password: this.pgClient.connectionParameters?.password || this.pgClient.options?.password,
+            port: parseInt(this.pgClient.connectionParameters?.port || this.pgClient.options?.port) || 5432,
+            connectionTimeoutMillis: 3000
+        });
+        
         try {
-            // 🔎 1. Busca a maior data de alteração que o SQLite possui guardada localmente
+            await pgTemp.connect();
+            
+            if (!this.tenantEmpresaId || !this.tenantFilialId) {
+                return { status: 'erro', mensagem: 'IDs de governança ausentes no boot.' };
+            }
+
             const ultimaAtualizacao = await new Promise((resolve) => {
                 this.sqliteDb.get(`SELECT COALESCE(MAX(data_alteracao), '1970-01-01 00:00:00') as ultima FROM usuarios_locais`, (err, row) => {
                     resolve(row ? row.ultima : '1970-01-01 00:00:00');
@@ -417,8 +443,6 @@ class DatabaseManager {
 
             console.log(`[SYNC-INCREMENTAL] Buscando operadores modificados no Postgres após: ${ultimaAtualizacao}`);
             
-            // 📑 2. Consulta filtrando estritamente por u.data_alteracao > ultimaAtualizacao do caixa
-            // 📑 2. Consulta filtrando com truncamento de segundos para ignorar milissegundos
             const queryPG = `
                 SELECT DISTINCT
                     u.id, u.usuario, u.nome, u.senha, u.role, u.bloqueado, 
@@ -433,7 +457,8 @@ class DatabaseManager {
                   AND DATE_TRUNC('second', u.data_alteracao) > $3::timestamp
             `;
             
-            const resultado = await this.pgClient.query(queryPG, [this.tenantEmpresaId, this.tenantFilialId, ultimaAtualizacao]);
+            // 🌟 CORREÇÃO: Mudado de this.pgClient para pgTemp
+            const resultado = await pgTemp.query(queryPG, [this.tenantEmpresaId, this.tenantFilialId, ultimaAtualizacao]);
             const operadoresNovos = resultado.rows;
 
             if (operadoresNovos.length === 0) {
@@ -451,14 +476,9 @@ class DatabaseManager {
                         INSERT INTO usuarios_locais (id, usuario, nome, senha, role, bloqueado, usuario_pdv, trocar_senha_prox_login, data_alteracao)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                         ON CONFLICT(usuario) DO UPDATE SET 
-                            id = excluded.id,
-                            nome = excluded.nome,
-                            senha = excluded.senha,
-                            role = excluded.role,
-                            bloqueado = excluded.bloqueado,
-                            usuario_pdv = excluded.usuario_pdv,
-                            trocar_senha_prox_login = excluded.trocar_senha_prox_login,
-                            data_alteracao = excluded.data_alteracao
+                            id = excluded.id, nome = excluded.nome, senha = excluded.senha, role = excluded.role, 
+                            bloqueado = excluded.bloqueado, usuario_pdv = excluded.usuario_pdv, 
+                            trocar_senha_prox_login = excluded.trocar_senha_prox_login, data_alteracao = excluded.data_alteracao
                     `);
 
                     for (const op of operadoresNovos) {
@@ -476,38 +496,39 @@ class DatabaseManager {
         } catch (error) {
             console.error("[SYNC] Erro no lote incremental de operadores:", error.message);
             return { status: 'erro', mensagem: error.message };
+        } finally {
+            // 🌟 CORREÇÃO: Encerra a conexão isolada liberando recursos
+            await pgTemp.end().catch(() => {});
         }
     }
 
     async sincronizarClientes() {
-        if (!this.isOnline || !this.pgClient) {
-            console.log("[SYNC-CLIENTES] Caixa operando offline. Pulando carga de clientes.");
-            return { status: 'offline' };
-        }
+        if (!this.pgClient) return { status: 'offline' };
 
-        if (!this.tenantEmpresaId || !this.tenantFilialId) {
-            console.log("[SYNC-CLIENTES] ⚠️ Governança do terminal não carregada. Abortando sync.");
-            return { status: 'erro', mensagem: 'Empresa ou Filial ausente no boot.' };
-        }
+        const pgTemp = new (require('pg').Client)({
+            host: this.pgClient.connectionParameters?.host || this.pgClient.options?.host,
+            database: this.pgClient.connectionParameters?.database || this.pgClient.options?.database,
+            user: this.pgClient.connectionParameters?.user || this.pgClient.options?.user,
+            password: this.pgClient.connectionParameters?.password || this.pgClient.options?.password,
+            port: parseInt(this.pgClient.connectionParameters?.port || this.pgClient.options?.port) || 5432,
+            connectionTimeoutMillis: 3000
+        });
 
         try {
-            const queryEscopo = "SELECT escopo FROM tabelas_escopo WHERE tabela_nome = 'clientes'";
-            const resEscopo = await this.pgClient.query(queryEscopo);
-            const escopoAtual = resEscopo.rows.length > 0 ? String(resEscopo.rows[0].escopo).toUpperCase() : 'COMPARTILHADO';
+            await pgTemp.connect();
+            const escopoAtual = this.obterEscopoTabela('clientes');
 
-            // 🔎 1. Busca a maior data de alteração que o SQLite possui guardada localmente para clientes
             const ultimaAtualizacaoClientes = await new Promise((resolve) => {
                 this.sqliteDb.get(`SELECT COALESCE(MAX(data_alteracao), '1970-01-01 00:00:00') as ultima FROM clientes_locais`, (err, row) => {
                     resolve(row ? row.ultima : '1970-01-01 00:00:00');
                 });
             });
 
-            console.log(`[SYNC-CLIENTES-INCREMENTAL] Verificando novos clientes após: ${ultimaAtualizacaoClientes}`);
+            console.log(`[SYNC-CLIENTES-INCREMENTAL] Verificando novos clientes após: ${ultimaAtualizacaoClientes} | Escopo: ${escopoAtual}`);
 
             let queryPG = "";
             let parametrosPG = [];
 
-            // 📑 2. Montagem de Query Híbrida: Limite líquido + Filtro dinâmico de timestamp incremental (c.data_alteracao)
             if (escopoAtual === 'COMPARTILHADO') {
                 queryPG = `
                     SELECT 
@@ -515,12 +536,9 @@ class DatabaseManager {
                         TO_CHAR(c.data_alteracao, 'YYYY-MM-DD HH24:MI:SS') as data_alteracao,
                         (COALESCE(c.limite_credito, 0) - COALESCE((SELECT SUM(saldo_restante) FROM contas_a_receber WHERE cliente_id = c.id AND status = 'P' AND deletado = false), 0)) as limite_restante
                     FROM clientes c
-                    WHERE c.empresa_id = $1 
-                    AND c.filial_id IS NULL
-                    AND c.deletado = false
-                    AND DATE_TRUNC('second', c.data_alteracao) > $2::timestamp
+                    WHERE c.empresa_id = $1 AND c.filial_id IS NULL AND c.deletado = false AND DATE_TRUNC('second', c.data_alteracao) > $2::timestamp
                 `;
-                    parametrosPG = [this.tenantEmpresaId, ultimaAtualizacaoClientes];
+                parametrosPG = [this.tenantEmpresaId, ultimaAtualizacaoClientes];
             } else {
                 queryPG = `
                     SELECT 
@@ -528,15 +546,13 @@ class DatabaseManager {
                         TO_CHAR(c.data_alteracao, 'YYYY-MM-DD HH24:MI:SS') as data_alteracao,
                         (COALESCE(c.limite_credito, 0) - COALESCE((SELECT SUM(saldo_restante) FROM contas_a_receber WHERE cliente_id = c.id AND status = 'P' AND deletado = false), 0)) as limite_restante
                     FROM clientes c
-                    WHERE c.empresa_id = $1 
-                      AND c.filial_id = $2
-                      AND c.deletado = false
-                      AND DATE_TRUNC('second', c.data_alteracao) > $3::timestamp
+                    WHERE c.empresa_id = $1 AND c.filial_id = $2 AND c.deletado = false AND DATE_TRUNC('second', c.data_alteracao) > $3::timestamp
                 `;
                 parametrosPG = [this.tenantEmpresaId, this.tenantFilialId, ultimaAtualizacaoClientes];
             }
 
-            const resultado = await this.pgClient.query(queryPG, parametrosPG);
+            // 🌟 CORREÇÃO: Mudado de this.pgClient para pgTemp
+            const resultado = await pgTemp.query(queryPG, parametrosPG);
             const clientesNovos = resultado.rows;
 
             if (clientesNovos.length === 0) {
@@ -554,12 +570,8 @@ class DatabaseManager {
                         INSERT INTO clientes_locais (id, empresa_id, filial_id, nome, cpf, limite_credito, bloqueado, deletado, data_alteracao)
                         VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)
                         ON CONFLICT(id) DO UPDATE SET 
-                            nome = excluded.nome,
-                            cpf = excluded.cpf,
-                            limite_credito = excluded.limite_credito,
-                            bloqueado = excluded.bloqueado,
-                            filial_id = excluded.filial_id,
-                            data_alteracao = excluded.data_alteracao
+                            nome = excluded.nome, cpf = excluded.cpf, limite_credito = excluded.limite_credito, 
+                            bloqueado = excluded.bloqueado, filial_id = excluded.filial_id, data_alteracao = excluded.data_alteracao
                     `);
 
                     for (const cli of clientesNovos) {
@@ -578,6 +590,9 @@ class DatabaseManager {
         } catch (error) {
             console.error("[SYNC-CLIENTES] Erro fatal no lote incremental:", error.message);
             return { status: 'erro', mensagem: error.message };
+        } finally {
+            // 🌟 CORREÇÃO: Encerra a conexão isolada liberando recursos
+            await pgTemp.end().catch(() => {});
         }
     }
 
@@ -601,10 +616,12 @@ class DatabaseManager {
     async verificarCaixaAberto(caixaId) {
         if (this.isOnline) {
             try {
-                const query = `SELECT id FROM movimentos_caixa WHERE caixa_id = $1 AND status = 'A' AND deletado = false LIMIT 1 `;
+                const query = `SELECT id FROM movimentos_caixa WHERE caixa_id = $1 AND status = 'A' AND deletado = false LIMIT 1`;
                 const res = await this.pgClient.query(query, [caixaId]);
                 return res.rows.length > 0;
             } catch (err) {
+                // 🌟 REVELA O ERRO SE O CAIXA_ABERTO FALHAR
+                console.error("🔴 [FALHA SILENCIOSA - VERIFICAR CAIXA ABERTO]:", err.message);
                 this.isOnline = false;
             }
         }
@@ -618,36 +635,30 @@ class DatabaseManager {
 
     async abrirCaixa(caixaId, operadorId, valorAbertura) {
         const idMovimento = crypto.randomUUID();
-        // 🌟 CORREÇÃO: Substituído o .toISOString() pela função local pura
         const dataAtual = obterDataHoraLocalANSI();
-        let empresaId = null;
-        let filialId = null;
 
-        // Recupera de qual Empresa/Filial este Caixa é para espelhar
+        // 🌟 CAPTURA DOS IDS GLOBAIS DE GOVERNANÇA EM MEMÓRIA
+        const empIdGlobal = this.tenantEmpresaId;
+        const filIdGlobal = this.tenantFilialId;
+
         if (this.isOnline) {
             try {
-                const resCx = await this.pgClient.query('SELECT empresa_id, filial_id FROM caixas WHERE id = $1', [caixaId]);
-                if (resCx.rows.length > 0) {
-                    empresaId = resCx.rows[0].empresa_id;
-                    filialId = resCx.rows[0].filial_id;
+                // ❌ REMOVIDO: A consulta 'SELECT empresa_id, filial_id FROM caixas...' foi deletada daqui!
+                if (!empIdGlobal) {
+                    throw new Error('Dados de governança (Empresa ID) ausentes no escopo em memória.');
                 }
-            } catch (err) { this.isOnline = false; }
-        }
 
-        if (this.isOnline && empresaId && filialId) {
-            try {
-                // 🔎 NOVO: Consulta o escopo dinâmico para os turnos (movimentos_caixa)
-                const resEscopo = await this.pgClient.query("SELECT escopo FROM tabelas_escopo WHERE tabela_nome = 'movimentos_caixa'");
-                const escopoTurnos = resEscopo.rows.length > 0 ? String(resEscopo.rows[0].escopo).toUpperCase() : 'EXCLUSIVO';
+                // 🌟 NOVO: Busca a regra de escopo diretamente do cache global em memória
+                const escopoTurnos = this.obterEscopoTabela('movimentos_caixa');
 
                 // 🌟 REGRA DE ESCOPO: Se movimentos_caixa for COMPARTILHADO, grava filial_id como NULL
-                const filialPgValor = (escopoTurnos === 'COMPARTILHADO') ? null : filialId;
+                const filialPgValor = (escopoTurnos === 'COMPARTILHADO') ? null : filIdGlobal;
 
                 const queryPG = `
                     INSERT INTO movimentos_caixa (id, caixa_id, operador_abertura_id, data_abertura, valor_abertura, status, empresa_id, filial_id)
                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                 `;
-                await this.pgClient.query(queryPG, [idMovimento, caixaId, operadorId, dataAtual, valorAbertura, 'A', empresaId, filialPgValor]);
+                await this.pgClient.query(queryPG, [idMovimento, caixaId, operadorId, dataAtual, valorAbertura, 'A', empIdGlobal, filialPgValor]);
                 console.log("[BANCO] Turno de caixa aberto com sucesso no PostgreSQL.");
             } catch (err) {
                 console.error("[BANCO] Erro ao abrir no Postgres, mudando para contingência offline:", err.message);
@@ -683,14 +694,19 @@ class DatabaseManager {
         const idVenda = crypto.randomUUID();
         const dataAtual = obterDataHoraLocalANSI();
 
+        // 🌟 TRAVA DE SEGURANÇA ANTICORRUPÇÃO: Garante que vendas em Crediário nunca salvem informações de bandeira de cartão
+        if (formaPagamento === 'CR') {
+            bandeira = null;
+        }
+
+        // CAPTURA DOS IDS GLOBAIS DE GOVERNANÇA EM MEMÓRIA
+        const empIdGlobal = this.tenantEmpresaId;
+        const filIdGlobal = this.tenantFilialId;
+
         // =====================================================================
         // 🔒 TRAVA DE CRÉDITO HÍBRIDA: Checagem em Tempo Real na Rede (CR)
         // =====================================================================
         if (formaPagamento === 'CR') {
-            
-            // 🌟 TRAVA DE SEGURANÇA: Garante que vendas em Crediário nunca salvem informações de bandeira de cartão
-            bandeira = null;
-            
             if (clienteId === '00000000-0000-0000-0000-000000000000' || !clienteId) {
                 throw new Error("Operação Recusada: Vendas no Crediário exigem obrigatoriamente a identificação de um Cliente nominal.");
             }
@@ -751,19 +767,17 @@ class DatabaseManager {
             );
         });
 
-        // 2. 🌟 NOVO: GERAÇÃO DE PARCELAS NO CREDIÁRIO DESMEMBRADO (CR) NO SQLITE
+        // 2. GERAÇÃO DE PARCELAS NO CREDIÁRIO DESMEMBRADO (CR) NO SQLITE
         if (formaPagamento === 'CR' && total > 0) {
             const valorPorParcela = total / parcelas;
             
-            // Adiciona a coluna parcela_numero na tabela temporária se necessário, ou guardamos em lote estruturado
             for (let i = 1; i <= parcelas; i++) {
                 const idConta = crypto.randomUUID();
                 const dataVencimento = new Date();
-                dataVencimento.setDate(dataVencimento.getDate() + (30 * i)); // 30, 60, 90 dias...
+                dataVencimento.setDate(dataVencimento.getDate() + (30 * i));
                 const dataVencimentoStr = obterDataHoraLocalANSI(dataVencimento).split(' ')[0];
 
                 await new Promise((resolve, reject) => {
-                    // Adicionamos no banco local o valor individual calculado da parcela
                     const queryCRLite = `
                         INSERT INTO contas_a_receber_locais (id, venda_id, cliente_id, data_vencimento, valor_original, status, sincronizado, deletado)
                         VALUES (?, ?, ?, ?, ?, 'P', 0, 0)
@@ -798,31 +812,28 @@ class DatabaseManager {
         // 3. REPLICAÇÃO EM TEMPO REAL PRO POSTGRESQL (SE ONLINE)
         if (this.isOnline) {
             try {
-                const resCx = await this.pgClient.query('SELECT empresa_id, filial_id FROM caixas WHERE id = $1', [caixaId]);
-                if (resCx.rows.length === 0) throw new Error('Caixa operacional não localizado no PostgreSQL.');
-                const { empresa_id, filial_id } = resCx.rows[0];
+                if (!empIdGlobal) throw new Error('Dados de governança (Empresa ID) ausentes no escopo.');
 
-                const resEscopo = await this.pgClient.query("SELECT escopo FROM tabelas_escopo WHERE tabela_nome = 'vendas'");
-                const escopoVendas = resEscopo.rows.length > 0 ? String(resEscopo.rows[0].escopo).toUpperCase() : 'EXCLUSIVO';
-                const filialPgValor = (escopoVendas === 'COMPARTILHADO') ? null : filial_id;
+                // 🌟 NOVO: Lê a regra dinamicamente direto da memória cache
+                const escopoVendas = this.obterEscopoTabela('vendas');
+                const filialPgValor = (escopoVendas === 'COMPARTILHADO') ? null : filIdGlobal;
 
                 const queryPG = `
                     INSERT INTO vendas (id, caixa_id, operador_id, cliente_id, forma_pagamento, origem, total, descricao_movimento, data_venda, bandeira, parcelas, empresa_id, filial_id) 
                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
                 `;
-                await this.pgClient.query(queryPG, [idVenda, caixaId, operadorId, clienteId, formaPagamento, origem, total, descricaoMovimento, dataAtual, bandeira, parcelas, empresa_id, filialPgValor]);
+                await this.pgClient.query(queryPG, [idVenda, caixaId, operadorId, clienteId, formaPagamento, origem, total, descricaoMovimento, dataAtual, bandeira, parcelas, empIdGlobal, filialPgValor]);
                 
-                // 🌟 NOVO: UPLOAD DAS MÚLTIPLAS PARCELAS DE CREDIÁRIO PRO SEU POSTGRES REAL
+                // UPLOAD DAS MÚLTIPLAS PARCELAS DE CREDIÁRIO PRO POSTGRES
                 if (formaPagamento === 'CR') {
                     const contasLocais = await new Promise((resolve) => {
                         this.sqliteDb.all(`SELECT * FROM contas_a_receber_locais WHERE venda_id = ?`, [idVenda], (err, rows) => resolve(rows || []));
                     });
                     
-                    const resEscopoCR = await this.pgClient.query("SELECT escopo FROM tabelas_escopo WHERE tabela_nome = 'contas_a_receber'");
-                    const escopoCR = resEscopoCR.rows.length > 0 ? String(resEscopoCR.rows[0].escopo).toUpperCase() : 'EXCLUSIVO';
-                    const filialCRPgValor = (escopoCR === 'COMPARTILHADO') ? null : filial_id;
+                    // 🌟 NOVO: Lê a regra dinamicamente direto da memória cache
+                    const escopoCR = this.obterEscopoTabela('contas_a_receber');
+                    const filialCRPgValor = (escopoCR === 'COMPARTILHADO') ? null : filIdGlobal;
 
-                    // Mapeia todas as colunas estruturais reais da sua tabela, calculando dinamicamente o número da iteração
                     let nrParcela = 1;
                     for (const conta of contasLocais) {
                         const queryCRPostgres = `
@@ -831,7 +842,7 @@ class DatabaseManager {
                         `;
                         
                         await this.pgClient.query(queryCRPostgres, [
-                            conta.id, empresa_id, filialCRPgValor, idVenda, clienteId,
+                            conta.id, empIdGlobal, filialCRPgValor, idVenda, clienteId,
                             nrParcela, parcelas, dataAtual, conta.data_vencimento, conta.valor_original, conta.valor_original
                         ]);
 
@@ -841,11 +852,16 @@ class DatabaseManager {
                 }
 
                 if (formaPagamento === 'CC') {
+                    // ❌ REMOVIDO: Consulta de escopo de recebíveis deletada daqui!
+                    // 🌟 NOVO: Carrega as regras de recebíveis em lote direto do cache de uma vez só
+                    const escopoRecebiveis = this.obterEscopoTabela('recebiveis_cartao');
+                    const filialRecPgValor = (escopoRecebiveis === 'COMPARTILHADO') ? null : filIdGlobal;
+
                     const recebiveis = await new Promise((resolve) => {
                         this.sqliteDb.all(`SELECT * FROM recebiveis_cartao_locais WHERE venda_id = ?`, [idVenda], (err, rows) => resolve(rows || []));
                     });
                     for (const rec of recebiveis) {
-                        await this.pgClient.query(`INSERT INTO recebiveis_cartao (id, venda_id, caixa_id, parcela_numero, valor_parcela, data_prevista_recebimento, status, empresa_id, filial_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`, [rec.id, idVenda, caixaId, rec.parcela_numero, rec.valor_parcela, rec.data_prevista_recebimento, 'P', empresa_id, filialPgValor]);
+                        await this.pgClient.query(`INSERT INTO recebiveis_cartao (id, venda_id, caixa_id, parcela_numero, valor_parcela, data_prevista_recebimento, status, empresa_id, filial_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`, [rec.id, idVenda, caixaId, rec.parcela_numero, rec.valor_parcela, rec.data_prevista_recebimento, 'P', empIdGlobal, filialRecPgValor]);
                         this.sqliteDb.run(`UPDATE recebiveis_cartao_locais SET sincronizado = 1 WHERE id = ?`, [rec.id]);
                     }
                 }
@@ -853,7 +869,7 @@ class DatabaseManager {
                 this.sqliteDb.run(`UPDATE vendas_locais SET sincronizado = 1 WHERE id = ?`, [idVenda]);
                 return { status: 'sucesso', modo: 'ONLINE', id: idVenda };
             } catch (err) {
-                console.log("Erro ao espelhar transação no Postgres:", err.message);
+                console.log("Erro ao espelhar transação no Postgres, migrando para contingência:", err.message);
                 this.isOnline = false;
             }
         }
@@ -880,6 +896,15 @@ class DatabaseManager {
     async sincronizarVendasPendentes() {
         if (!this.isOnline) return { status: 'offline' };
 
+        // 🌟 VALIDAÇÃO DE SEGURANÇA: Garante que as variáveis globais de governança em memória estejam disponíveis
+        const empIdGlobal = this.tenantEmpresaId;
+        const filIdGlobal = this.tenantFilialId;
+
+        if (!empIdGlobal) {
+            console.error("[SYNC] Abortado: IDs de governança (Empresa) não carregados no escopo global.");
+            return { status: 'erro', mensagem: 'Governança ausente em memória.' };
+        }
+
         return new Promise((resolve) => {
             this.sqliteDb.all(`SELECT * FROM vendas_locais WHERE sincronizado = 0`, [], async (err, vendasPendentes) => {
                 if (err) {
@@ -891,24 +916,18 @@ class DatabaseManager {
                     return resolve({ status: 'limpo', total: 0 }); 
                 }
 
-                console.log(`[SYNC] Sincronizando ${vendasPendentes.length} atualizações com a nuvem...`);
+                console.log(`[SYNC] Sincronizando ${vendasPendentes.length} atualizações de forma otimizada com a nuvem...`);
 
                 try {
-                    // 🔎 NOVO: Puxa a regra de escopo de vendas antes do loop
-                    const resEscopo = await this.pgClient.query("SELECT escopo FROM tabelas_escopo WHERE tabela_nome = 'vendas'");
-                    const escopoVendas = resEscopo.rows.length > 0 ? String(resEscopo.rows[0].escopo).toUpperCase() : 'EXCLUSIVO';
+                    
+                    // 🌟 NOVO: Busca direto do cache em memória instantaneamente
+                    const escopoVendas = this.obterEscopoTabela('vendas');
+                    const filialPgValor = (escopoVendas === 'COMPARTILHADO') ? null : filIdGlobal;
 
                     for (const venda of vendasPendentes) {
                         const estaDeletadoPG = (venda.deletado === 1);
 
-                        const resCx = await this.pgClient.query('SELECT empresa_id, filial_id FROM caixas WHERE id = $1', [venda.caixa_id]);
-                        const empId = resCx.rows[0]?.empresa_id;
-                        const filId = resCx.rows[0]?.filial_id;
-
-                        // 🌟 Aplica a regra de filial baseada no escopo
-                        const filialPgValor = (escopoVendas === 'COMPARTILHADO') ? null : filId;
-
-                        const queryPG = `
+                        const queryVendaPG = `
                             INSERT INTO vendas (id, caixa_id, operador_id, cliente_id, forma_pagamento, origem, total, descricao_movimento, data_venda, deletado, bandeira, parcelas, empresa_id, filial_id)
                             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
                             ON CONFLICT (id) DO UPDATE SET deletado = excluded.deletado
@@ -918,26 +937,26 @@ class DatabaseManager {
                             ? '00000000-0000-0000-0000-000000000000' 
                             : venda.cliente_id;
 
-                        // 1. Faz o upload da Venda Pai no Postgres
-                        await this.pgClient.query(queryPG, [venda.id, venda.caixa_id, venda.operador_id, clientePgValor, venda.forma_pagamento, venda.origem, venda.total, venda.descricao_movimento, venda.data_venda, estaDeletadoPG, venda.bandeira, venda.parcelas, empId, filialPgValor]);
+                        // 1. Faz o upload da Venda Pai no Postgres utilizando as variáveis em memória
+                        await this.pgClient.query(queryVendaPG, [
+                            venda.id, venda.caixa_id, venda.operador_id, clientePgValor, 
+                            venda.forma_pagamento, venda.origem, venda.total, venda.descricao_movimento, 
+                            venda.data_venda, estaDeletadoPG, venda.bandeira, venda.parcelas, 
+                            empIdGlobal, filialPgValor
+                        ]);
                         
                         // =====================================================================
-                        // 🌟 AJUSTE 3 INTEGRADDO: Sincronização Dinâmica de Recebíveis
+                        // 🌟 Sincronização Dinâmica de Recebíveis (CC)
                         // =====================================================================
                         if (venda.forma_pagamento === 'CC') {
-                            // 🔎 Consulta o escopo dinâmico definido para a tabela de recebíveis
-                            const resEscopoRec = await this.pgClient.query("SELECT escopo FROM tabelas_escopo WHERE tabela_nome = 'recebiveis_cartao'");
-                            const escopoRecebiveis = resEscopoRec.rows.length > 0 ? String(resEscopoRec.rows[0].escopo).toUpperCase() : 'EXCLUSIVO';
+                            // 🌟 NOVO: Busca direto do cache em memória
+                            const escopoRecebiveis = this.obterEscopoTabela('recebiveis_cartao');
+                            const filialRecPgValor = (escopoRecebiveis === 'COMPARTILHADO') ? null : filIdGlobal;
 
-                            // 📑 Regra de negócio: Se o escopo for COMPARTILHADO, envia a filial como NULL para a nuvem
-                            const filialRecPgValor = (escopoRecebiveis === 'COMPARTILHADO') ? null : filId;
-
-                            // Busca as parcelas locais salvas no SQLite para esta venda específica
                             const recebiveis = await new Promise((resolve) => {
                                 this.sqliteDb.all(`SELECT * FROM recebiveis_cartao_locais WHERE venda_id = ?`, [venda.id], (err, rows) => resolve(rows || []));
                             });
 
-                            // Loop que faz o Upload/Upsert de cada parcela individualmente na nuvem
                             for (const r of recebiveis) {
                                 const queryRecPG = `
                                     INSERT INTO recebiveis_cartao (id, venda_id, caixa_id, parcela_numero, valor_parcela, data_prevista_recebimento, status, deletado, empresa_id, filial_id)
@@ -945,18 +964,13 @@ class DatabaseManager {
                                     ON CONFLICT (id) DO UPDATE SET status = excluded.status, deletado = excluded.deletado
                                 `;
                                 
-                                await this.pgClient.query(queryRecPG, [r.id, venda.id, venda.caixa_id, r.parcela_numero, r.valor_parcela, r.data_prevista_recebimento, r.status, r.deletado === 1, empId, filialRecPgValor]);
-                                
-                                // Atualiza a flag local do SQLite marcando como enviado com sucesso
+                                await this.pgClient.query(queryRecPG, [r.id, venda.id, venda.caixa_id, r.parcela_numero, r.valor_parcela, r.data_prevista_recebimento, r.status, r.deletado === 1, empIdGlobal, filialRecPgValor]);
                                 this.sqliteDb.run(`UPDATE recebiveis_cartao_locais SET sincronizado = 1 WHERE id = ?`, [r.id]);
                             }
                         }
 
                         // =====================================================================
-                        // 📊 ADICIONADO: Sincronização Dinâmica de Contas a Receber (Crediário)
-                        // =====================================================================
-                        // =====================================================================
-                        // 📊 ATUALIZADO: Sincronização de Múltiplas Parcelas do Crediário
+                        // 📊 Sincronização de Múltiplas Parcelas do Crediário (CR)
                         // =====================================================================
                         if (venda.forma_pagamento === 'CR') {
                             const contasLocais = await new Promise((resolve) => {
@@ -964,9 +978,9 @@ class DatabaseManager {
                             });
 
                             if (contasLocais.length > 0) {
-                                const resEscopoCR = await this.pgClient.query("SELECT escopo FROM tabelas_escopo WHERE tabela_nome = 'contas_a_receber'");
-                                const escopoCR = resEscopoCR.rows.length > 0 ? String(resEscopoCR.rows[0].escopo).toUpperCase() : 'EXCLUSIVO';
-                                const filialCRPgValor = (escopoCR === 'COMPARTILHADO') ? null : filId;
+                                // 🌟 NOVO: Busca direto do cache em memória
+                                const escopoCR = this.obterEscopoTabela('contas_a_receber');
+                                const filialCRPgValor = (escopoCR === 'COMPARTILHADO') ? null : filIdGlobal;
 
                                 let nrP = 1;
                                 for (const conta of contasLocais) {
@@ -977,7 +991,7 @@ class DatabaseManager {
                                     `;
                                     
                                     await this.pgClient.query(queryCRPostgres, [
-                                        conta.id, empId, filialCRPgValor, venda.id, venda.cliente_id,
+                                        conta.id, empIdGlobal, filialCRPgValor, venda.id, venda.cliente_id,
                                         nrP, venda.parcelas, venda.data_venda, conta.data_vencimento, conta.valor_original, conta.valor_original
                                     ]);
 
@@ -1004,7 +1018,7 @@ class DatabaseManager {
     }
 
     async obterResumoTurnoAtual(caixaId) {
-        let movimento = null;
+        let movimiento = null;
         
         if (this.isOnline) {
             try {
@@ -1012,12 +1026,16 @@ class DatabaseManager {
                     `SELECT id, valor_abertura, data_abertura FROM movimentos_caixa WHERE caixa_id = $1 AND status = 'A' AND deletado = false LIMIT 1`, 
                     [caixaId]
                 );
-                if (res.rows.length > 0) movimento = res.rows[0];
-            } catch (err) { this.isOnline = false; }
+                if (res.rows.length > 0) movimiento = res.rows[0];
+            } catch (err) { 
+                // 🌟 REVELA O ERRO SE A BUSCA DE MOVIMENTO FALHAR
+                console.error("🔴 [FALHA SILENCIOSA - RESUMO TURNO (MOVIMENTO)]:", err.message);
+                this.isOnline = false; 
+            }
         }
         
-        if (!movimento) {
-            movimento = await new Promise((resolve) => {
+        if (!movimiento) {
+            movimiento = await new Promise((resolve) => {
                 this.sqliteDb.get(
                     `SELECT id, valor_abertura, data_abertura FROM movimentos_caixa_locais WHERE caixa_id = ? AND status = 'A' AND deletado = 0`, 
                     [caixaId], (err, row) => resolve(row)
@@ -1025,9 +1043,9 @@ class DatabaseManager {
             });
         }
 
-        if (!movimento) return { status: 'erro', mensagem: 'Nenhum turno aberto encontrado para este caixa.' };
+        if (!movimiento) return { status: 'erro', mensagem: 'Nenhum turno aberto encontrado para este caixa.' };
 
-        const dataAberturaTurno = movimento.data_abertura;
+        const dataAberturaTurno = movimiento.data_abertura;
 
         let vendas = [];
         if (this.isOnline) {
@@ -1038,7 +1056,11 @@ class DatabaseManager {
                 `;
                 const res = await this.pgClient.query(queryPG, [caixaId, dataAberturaTurno]);
                 vendas = res.rows;
-            } catch (err) { this.isOnline = false; }
+            } catch (err) { 
+                // 🌟 REVELA O ERRO SE A LISTAGEM DE VENDAS DO RESUMO FALHAR
+                console.error("🔴 [FALHA SILENCIOSA - RESUMO TURNO (VENDAS)]:", err.message);
+                this.isOnline = false; 
+            }
         }
         
         if (!this.isOnline) {
@@ -1171,9 +1193,13 @@ class DatabaseManager {
         let movimiento = null;
         if (this.isOnline) {
             try {
-                const res = await this.pgClient.query(`SELECT data_abertura FROM movimentos_caixa WHERE caixa_id = $1 AND status = 'A' AND deletado = false LIMIT 1`, [caixaId]);
+                // Cast apenas no parâmetro string $1 para a coluna UUID do caixa
+                const res = await this.pgClient.query(`SELECT data_abertura FROM movimentos_caixa WHERE caixa_id = $1::uuid AND status = 'A' AND deletado = false LIMIT 1`, [caixaId]);
                 if (res.rows.length > 0) movimiento = res.rows[0];
-            } catch (err) { this.isOnline = false; }
+            } catch (err) { 
+                console.error("🔴 [ERRO CRÍTICO POSTGRES - BUSCAR ABERTURA TURNO]:", err.message);
+                this.isOnline = false; 
+            }
         }
         if (!movimiento) {
             movimiento = await new Promise((resolve) => {
@@ -1182,15 +1208,38 @@ class DatabaseManager {
         }
         if (!movimiento) return [];
 
-        // 🌟 CORREÇÃO: Adicionado bandeira e parcelas nos dois SELECTs abaixo
         if (this.isOnline) {
             try {
-                const res = await this.pgClient.query(`SELECT id, origem, total, forma_pagamento, descricao_movimento, bandeira, parcelas FROM vendas WHERE caixa_id = $1 AND data_venda >= $2 AND deletado = false ORDER BY data_venda DESC`, [caixaId, movimiento.data_abertura]);
+                // 🌟 QUERY LIMPA: Como cliente_id agora é UUID no Postgres, o JOIN com c.id funciona direto!
+                const queryPostgresTurno = `
+                    SELECT 
+                        v.id, v.origem, v.total, v.forma_pagamento, v.descricao_movimento, v.bandeira, v.parcelas, 
+                        COALESCE(c.nome, 'CONSUMIDOR FINAL') as cliente_nome 
+                    FROM vendas v 
+                    LEFT JOIN clientes c ON c.id = v.cliente_id 
+                    WHERE v.caixa_id = $1::uuid 
+                      AND v.data_venda >= $2::timestamp 
+                      AND v.deletado = false 
+                    ORDER BY v.data_venda DESC
+                `;
+                const res = await this.pgClient.query(queryPostgresTurno, [caixaId, movimiento.data_abertura]);
                 return res.rows;
-            } catch (err) { this.isOnline = false; }
+            } catch (err) { 
+                console.error("🔴 [ERRO CRÍTICO POSTGRES - LISTAR VENDAS TURNO]:", err.message);
+                this.isOnline = false; 
+            }
         }
+        
         return new Promise((resolve) => {
-            this.sqliteDb.all(`SELECT id, origem, total, forma_pagamento, descricao_movimento, bandeira, parcelas FROM vendas_locais WHERE caixa_id = ? AND data_venda >= ? AND deletado = 0 ORDER BY data_venda DESC`, [caixaId, movimiento.data_abertura], (err, rows) => resolve(rows || []));
+            this.sqliteDb.all(`
+                SELECT 
+                    v.id, v.origem, v.total, v.forma_pagamento, v.descricao_movimento, v.bandeira, v.parcelas, 
+                    COALESCE(c.nome, 'CONSUMIDOR FINAL') as cliente_nome 
+                FROM vendas_locais v 
+                LEFT JOIN clientes_locais c ON c.id = v.cliente_id 
+                WHERE v.caixa_id = ? AND v.data_venda >= ? AND v.deletado = 0 
+                ORDER BY v.data_venda DESC
+            `, [caixaId, movimiento.data_abertura], (err, rows) => resolve(rows || []));
         });
     }
 
@@ -1276,13 +1325,15 @@ class DatabaseManager {
 
         if (this.isOnline) {
             try {
-                // 1. Captura Empresa e Filial do Caixa ativo
-                const resCx = await this.pgClient.query('SELECT empresa_id, filial_id FROM caixas WHERE id = $1', [caixaId]);
-                if (resCx.rows.length === 0) throw new Error('Caixa operacional não localizado.');
-                
-                const { empresa_id, filial_id } = resCx.rows[0];
+                // CAPTURA DOS IDS GLOBAIS DE GOVERNANÇA EM MEMÓRIA (REPLACES A QUERY ANTIGA)
+                const empIdGlobal = this.tenantEmpresaId;
+                const filIdGlobal = this.tenantFilialId;
 
-                // 2. Query limpa, precisa e livre de INTERVALs sobrepostos
+                if (!empIdGlobal) {
+                    throw new Error('Dados de governança (Empresa ID) ausentes no escopo em memória.');
+                }
+
+                // Query limpa, precisa e livre de INTERVALs sobrepostos utilizando as globais estáveis
                 const queryPG = `
                     SELECT origem, total, forma_pagamento, descricao_movimento, data_venda, bandeira, parcelas
                     FROM vendas
@@ -1294,7 +1345,7 @@ class DatabaseManager {
                       AND deletado = false
                     ORDER BY data_venda DESC
                 `;
-                const res = await this.pgClient.query(queryPG, [caixaId, dataInicioClean, dataFimClean, empresa_id, filial_id]);
+                const res = await this.pgClient.query(queryPG, [caixaId, dataInicioClean, dataFimClean, empIdGlobal, filIdGlobal]);
                 
                 this.isOnline = true;
                 return res.rows;
@@ -1341,6 +1392,14 @@ class DatabaseManager {
             throw new Error("Sem conexão ativa com o servidor PostgreSQL central.");
         }
         
+        // 🌟 REAPROVEITAMENTO DAS VARIÁVEIS GLOBAIS DE GOVERNANÇA EM MEMÓRIA
+        const empIdGlobal = this.tenantEmpresaId;
+        const filIdGlobal = this.tenantFilialId;
+
+        if (!empIdGlobal) {
+            throw new Error("Erro de escopo: Identificadores de governança do terminal não estão carregados na sessão.");
+        }
+
         const logs = [];
         logs.push(`[${new Date().toLocaleTimeString()}] 🚀 Iniciando sincronização da tabela: ${tipo.toUpperCase()}`);
 
@@ -1350,19 +1409,11 @@ class DatabaseManager {
             });
             logs.push(`[INFO] Encontrados ${pendentes.length} lançamentos pendentes.`);
             
-            // 🔎 NOVO: Puxa o escopo dinâmico
-            const resEscopo = await this.pgClient.query("SELECT escopo FROM tabelas_escopo WHERE tabela_nome = 'vendas'");
-            const escopoVendas = resEscopo.rows.length > 0 ? String(resEscopo.rows[0].escopo).toUpperCase() : 'EXCLUSIVO';
+            const escopoVendas = this.obterEscopoTabela('vendas');
+            const filialPgValor = (escopoVendas === 'COMPARTILHADO') ? null : filIdGlobal;
 
             for (const v of pendentes) {
                 const estaDeletadoPG = (v.deletado === 1);
-
-                const resCx = await this.pgClient.query('SELECT empresa_id, filial_id FROM caixas WHERE id = $1', [v.caixa_id]);
-                const empId = resCx.rows[0]?.empresa_id;
-                const filId = resCx.rows[0]?.filial_id;
-
-                // 🌟 Aplica a regra de filial baseada no escopo
-                const filialPgValor = (escopoVendas === 'COMPARTILHADO') ? null : filId;
 
                 const queryPG = `
                     INSERT INTO vendas (id, caixa_id, operador_id, cliente_id, forma_pagamento, origem, total, descricao_movimento, data_venda, deletado, bandeira, parcelas, empresa_id, filial_id)
@@ -1374,7 +1425,7 @@ class DatabaseManager {
                     ? '00000000-0000-0000-0000-000000000000' 
                     : v.cliente_id;
                         
-                await this.pgClient.query(queryPG, [v.id, v.caixa_id, v.operador_id, clientePgValor, v.forma_pagamento, v.origem, v.total, v.descricao_movimento, v.data_venda, estaDeletadoPG, v.bandeira, v.parcelas, empId, filialPgValor]);
+                await this.pgClient.query(queryPG, [v.id, v.caixa_id, v.operador_id, clientePgValor, v.forma_pagamento, v.origem, v.total, v.descricao_movimento, v.data_venda, estaDeletadoPG, v.bandeira, v.parcelas, empIdGlobal, filialPgValor]);
                 this.sqliteDb.run(`UPDATE vendas_locais SET sincronizado = 1 WHERE id = ?`, [v.id]);
                 logs.push(`[SUCESSO] Lançamento ID ${v.id.substring(0,8)}... espelhado com a nuvem.`);
             }
@@ -1385,24 +1436,17 @@ class DatabaseManager {
             });
             logs.push(`[INFO] Encontrados ${pendentes.length} fechamentos de turnos pendentes.`);
 
-            // 🔎 NOVO: Consulta o escopo dinâmico para os turnos (movimentos_caixa)
-            const resEscopo = await this.pgClient.query("SELECT escopo FROM tabelas_escopo WHERE tabela_nome = 'movimentos_caixa'");
-            const escopoTurnos = resEscopo.rows.length > 0 ? String(resEscopo.rows[0].escopo).toUpperCase() : 'EXCLUSIVO';
+            const escopoTurnos = this.obterEscopoTabela('movimentos_caixa');
+            const filialPgValor = (escopoTurnos === 'COMPARTILHADO') ? null : filIdGlobal;
 
             for (const t of pendentes) {
-                const resCx = await this.pgClient.query('SELECT empresa_id, filial_id FROM caixas WHERE id = $1', [t.caixa_id]);
-                const empId = resCx.rows[0]?.empresa_id;
-                const filId = resCx.rows[0]?.filial_id;
-
-                // 🌟 Aplica a regra de filial baseada no escopo lido
-                const filialPgValor = (escopoTurnos === 'COMPARTILHADO') ? null : filId;
 
                 const queryPG = `
                     INSERT INTO movimentos_caixa (id, caixa_id, operador_abertura_id, operador_fechamento_id, data_abertura, data_fechamento, valor_abertura, valor_fechamento, valor_contado, diferenca, status, deletado, empresa_id, filial_id)
                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
                     ON CONFLICT (id) DO UPDATE SET status = excluded.status, data_fechamento = excluded.data_fechamento, valor_fechamento = excluded.valor_fechamento, valor_contado = excluded.valor_contado, diferenca = excluded.diferenca
                 `;
-                await this.pgClient.query(queryPG, [t.id, t.caixa_id, t.operador_abertura_id, t.operador_fechamento_id, t.data_abertura, t.data_fechamento, t.valor_abertura, t.valor_fechamento, t.valor_contado, t.diferenca, t.status, t.deletado === 1, empId, filialPgValor]);
+                await this.pgClient.query(queryPG, [t.id, t.caixa_id, t.operador_abertura_id, t.operador_fechamento_id, t.data_abertura, t.data_fechamento, t.valor_abertura, t.valor_fechamento, t.valor_contado, t.diferenca, t.status, t.deletado === 1, empIdGlobal, filialPgValor]);
                 
                 await new Promise((resolve) => {
                     this.sqliteDb.run(`UPDATE movimentos_caixa_locais SET sincronizado = 1 WHERE id = ?`, [t.id], () => resolve());
@@ -1417,24 +1461,17 @@ class DatabaseManager {
             });
             logs.push(`[INFO] Encontrados ${pendentes.length} recebíveis de cartão pendentes.`);
 
-            // 🔎 NOVO: Consulta o escopo dinâmico para recebiveis_cartao
-            const resEscopoRec = await this.pgClient.query("SELECT escopo FROM tabelas_escopo WHERE tabela_nome = 'recebiveis_cartao'");
-            const escopoRecebiveis = resEscopoRec.rows.length > 0 ? String(resEscopoRec.rows[0].escopo).toUpperCase() : 'EXCLUSIVO';
+            const escopoRecebiveis = this.obterEscopoTabela('recebiveis_cartao');
+            const filialRecPgValor = (escopoRecebiveis === 'COMPARTILHADO') ? null : filIdGlobal;
 
             for (const r of pendentes) {
-                const resCx = await this.pgClient.query('SELECT empresa_id, filial_id FROM caixas WHERE id = $1', [r.caixa_id]);
-                const empId = resCx.rows[0]?.empresa_id;
-                const filId = resCx.rows[0]?.filial_id;
-
-                // 🌟 Aplica a regra de filial baseada no escopo lido
-                const filialPgValor = (escopoRecebiveis === 'COMPARTILHADO') ? null : filId;
 
                 const queryPG = `
                     INSERT INTO recebiveis_cartao (id, venda_id, caixa_id, parcela_numero, valor_parcela, data_prevista_recebimento, status, deletado, empresa_id, filial_id)
                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
                     ON CONFLICT (id) DO UPDATE SET status = excluded.status, deletado = excluded.deletado
                 `;
-                await this.pgClient.query(queryPG, [r.id, r.venda_id, r.caixa_id, r.parcela_numero, r.valor_parcela, r.data_prevista_recebimento, r.status, r.deletado === 1, empId, filialPgValor]);
+                await this.pgClient.query(queryPG, [r.id, r.venda_id, r.caixa_id, r.parcela_numero, r.valor_parcela, r.data_prevista_recebimento, r.status, r.deletado === 1, empIdGlobal, filialRecPgValor]);
                 this.sqliteDb.run(`UPDATE recebiveis_cartao_locais SET sincronizado = 1 WHERE id = ?`, [r.id]);
                 logs.push(`[SUCESSO] Recebível ID ${r.id.substring(0,8)}... espelhado com a nuvem.`);
             }
@@ -1445,15 +1482,10 @@ class DatabaseManager {
             });
             logs.push(`[INFO] Encontrados ${pendentes.length} títulos de parcelas de crediário pendentes.`);
 
-            const resEscopoCR = await this.pgClient.query("SELECT escopo FROM tabelas_escopo WHERE tabela_nome = 'contas_a_receber'");
-            const escopoCR = resEscopoCR.rows.length > 0 ? String(resEscopoCR.rows[0].escopo).toUpperCase() : 'EXCLUSIVO';
+            const escopoCR = this.obterEscopoTabela('contas_a_receber');
+            const filialCRPgValor = (escopoCR === 'COMPARTILHADO') ? null : filIdGlobal;
 
             for (const c of pendentes) {
-                const resCx = await this.pgClient.query('SELECT empresa_id, filial_id FROM caixas WHERE id = (SELECT caixa_id FROM vendas_locais WHERE id = $1)', [c.venda_id]);
-                const empId = resCx.rows[0]?.empresa_id;
-                const filId = resCx.rows[0]?.filial_id;
-                
-                const filialCRPgValor = (escopoCR === 'COMPARTILHADO') ? null : filId;
 
                 // Captura metadados da venda pai para estruturar o total de parcelamento correto
                 const vendaPai = await new Promise((resolve) => {
@@ -1474,7 +1506,7 @@ class DatabaseManager {
                 `;
                 
                 await this.pgClient.query(queryCRPostgres, [
-                    c.id, empId, filialCRPgValor, c.venda_id, c.cliente_id, 
+                    c.id, empIdGlobal, filialCRPgValor, c.venda_id, c.cliente_id, 
                     ordemParcela, totalParcelasVenda, dataEmissao, c.data_vencimento, c.valor_original, c.valor_original
                 ]);
                 

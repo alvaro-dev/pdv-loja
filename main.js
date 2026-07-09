@@ -425,3 +425,115 @@ ipcMain.handle('buscar-clientes-pdv', async (event, termo) => {
 ipcMain.handle('verificar-status-rede-banco', async () => {
     return { isOnline: db.isOnline };
 });
+
+// 🌟 NOVO: Canal para processar a emissão do cupom de crediário
+ipcMain.on('imprimir-comprovante-crediario', async (event, vendaId) => {
+    try {
+        // 1. Busca os dados da venda e do cliente direto no SQLite de contingência rápida
+        const venda = await new Promise((resolve) => {
+            db.sqliteDb.get(`SELECT v.*, c.nome as cliente_nome, c.cpf as cliente_cpf FROM vendas_locais v JOIN clientes_locais c ON c.id = v.cliente_id WHERE v.id = ?`, [vendaId], (err, row) => resolve(row));
+        });
+
+        if (!venda) return;
+
+        // 2. Busca todas as parcelas geradas para esta assinatura
+        const parcelas = await new Promise((resolve) => {
+            db.sqliteDb.all(`SELECT * FROM contas_a_receber_locais WHERE venda_id = ? ORDER BY data_vencimento ASC`, [vendaId], (err, rows) => resolve(rows || []));
+        });
+
+        // 3. Cria uma janela oculta do Electron para desenhar o cupom térmico (padrão 80mm)
+        let workerWindow = new BrowserWindow({ show: false, webPreferences: { nodeIntegration: true, contextIsolation: false } });
+        
+        // Corta o ID para os primeiros 8 caracteres para o nome do arquivo não ficar gigante
+        const idCurto = venda.id.substring(0, 8);
+        
+        // Montagem do HTML formatado via CSS para bobinas térmicas
+        let htmlCupom = `
+            <html>
+            <head>
+                <title>Comprovante_Crediario_${idCurto}</title>
+                <style>
+                    body { font-family: monospace; font-size: 12px; width: 280px; margin: 0; padding: 10px; color: #000; }
+                    .text-center { text-align: center; }
+                    .bold { font-weight: bold; }
+                    .linha { border-top: 1px dashed #000; margin: 8px 0; }
+                    .tabela { width: 100%; font-size: 11px; }
+                    .assinatura { margin-top: 40px; text-align: center; }
+                </style>
+            </head>
+            <body>
+                <div class="text-center bold" style="font-size: 14px;">GRUPO ALFA VAREJO</div>
+                <div class="text-center">CNPJ: 00.000.000/0001-00</div>
+                <div class="text-center">FILIAL: ALFA MATRIZ</div>
+                <div class="linha"></div>
+                <div class="text-center bold">COMPROVANTE DE CREDIÁRIO</div>
+                <div class="text-center bold">NOTA PROMISSÓRIA</div>
+                <div class="linha"></div>
+                <div><b>DOC Venda:</b> ${venda.id.substring(0,8)}</div>
+                <div><b>Data/Hora:</b> ${venda.data_venda}</div>
+                <div class="linha"></div>
+                <div><b>DEVEDOR:</b> ${venda.cliente_nome}</div>
+                <div><b>CPF:</b> ${venda.cliente_cpf || 'Não Informado'}</div>
+                <div class="linha"></div>
+                <div class="bold">EXTRATO DAS PARCELAS:</div>
+                <table class="tabela">
+                    <thead>
+                        <tr><th>Parc.</th><th>Vencimento</th><th style="text-align:right;">Valor</th></tr>
+                    </thead>
+                    <tbody>
+        `;
+
+        let totalVenda = 0;
+        let index = 1;
+        for(const p of parcelas) {
+            const valorFmt = parseFloat(p.valor_original).toFixed(2);
+            totalVenda += parseFloat(p.valor_original);
+            
+            // Inverte a data ISO para o formato brasileiro no cupom
+            const [ano, mes, dia] = p.data_vencimento.split('-');
+            const dataBr = `${dia}/${mes}/${ano}`;
+
+            htmlCupom += `<tr><td class="text-center">${index}/${parcelas.length}</td><td class="text-center">${dataBr}</td><td style="text-align:right;">R$ ${valorFmt}</td></tr>`;
+            index++;
+        }
+
+        htmlCupom += `
+                    </tbody>
+                </table>
+                <div class="linha"></div>
+                <div class="bold" style="text-align: right; font-size: 13px;">TOTAL DO DEBITO: R$ ${totalVenda.toFixed(2)}</div>
+                <div class="linha"></div>
+                <div style="text-align: justify; font-size: 10px; line-height: 1.3;">
+                    <b>TERMO DE CONFISSÃO DE DÍVIDA:</b> Pelo presente instrumento, confesso e me obrigo de forma irrevogável a pagar livre de despesas a quantia acima discriminada dividida nas respectivas faturas e vencimentos estipulados neste cupom.
+                </div>
+                <div class="assinatura">
+                    ____________________________________<br>
+                    <b>ASSINATURA DO CLIENTE</b>
+                </div>
+                <div class="text-center" style="margin-top: 20px; font-size: 9px;">Obrigado pela preferência!</div>
+            </body>
+            </html>
+        `;
+
+        // Carrega o HTML na janela oculta e dispara o comando físico de impressão
+        workerWindow.loadURL('about:blank'); // Abre uma página em branco limpa
+
+        workerWindow.webContents.on('did-finish-load', async () => {
+            // Injeta o HTML diretamente no body da página em branco
+            await workerWindow.webContents.executeJavaScript(`
+                document.title = "Comprovante_Crediario_${idCurto}";
+                document.documentElement.innerHTML = \`${htmlCupom}\`;
+            `);
+
+            // Dispara a impressão física ou virtual
+            //💡 Nota: Mudei silent: true para silent: false temporariamente para que você veja a tela de escolha de impressora do Windows e comprove que o nome do arquivo agora sairá limpo como Comprovante_Crediario_XXXX.pdf!
+            workerWindow.webContents.print({ silent: false, printBackground: true }, (success, failureReason) => {
+                if (!success) console.error("Falha ao imprimir:", failureReason);
+                workerWindow.close();
+            });
+        });
+
+    } catch (err) {
+        console.error("Erro ao processar impressão do crediário:", err.message);
+    }
+});
