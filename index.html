@@ -334,6 +334,14 @@
                         <button id="btnSyncRecebiveis" style="margin-top: 0; padding: 6px 12px; font-size: 13px; background-color: #28a745; width: auto;">Sincronizar</button>
                     </td>
                 </tr>
+                <tr>
+                    <td style="padding: 10px; border: 1px solid #dee2e6; font-weight: bold;">📊 Crediário / Contas a Receber</td>
+                    <td id="txtTotalCrediario" style="padding: 10px; border: 1px solid #dee2e6; text-align: center; font-weight: bold;">0</td>
+                    <td id="txtPendentesCrediario" style="padding: 10px; border: 1px solid #dee2e6; text-align: center; font-weight: bold; color: #dc3545;">0</td>
+                    <td style="padding: 10px; border: 1px solid #dee2e6; text-align: center;">
+                        <button id="btnSyncCrediario" style="margin-top: 0; padding: 6px 12px; font-size: 13px; background-color: #28a745; width: auto;">Sincronizar</button>
+                    </td>
+                </tr>
             </tbody>
         </table>
 
@@ -374,14 +382,15 @@
                 <option value="CC">CC - Cartão de Crédito</option>
                 <option value="CD">CD - Cartão de Débito</option>
                 <option value="PX">PX - Pix</option>
+                <option value="CR">CR - Crediário / Faturamento Próprio</option>
             </select>
         </div>
 
         <div id="painelCartaoCredito" style="display: none; background-color: #f8f9fa; padding: 10px; border: 1px solid #ced4da; border-radius: 4px; margin-bottom: 15px;">
-            <p style="margin: 0 0 8px 0; font-size: 12px; font-weight: bold; color: #495057;">💳 Detalhes do Cartão de Crédito</p>
+            <p id="tituloPainelParcelas" style="margin: 0 0 8px 0; font-size: 12px; font-weight: bold; color: #495057;">💳 Detalhes do Parcelamento</p>
             
             <div style="display: flex; gap: 10px;">
-                <div style="flex: 1;">
+                <div id="containerBandeiraCartao" style="flex: 1;">
                     <label for="bandeiraCartao" style="display: block; font-size: 12px; margin-bottom: 4px;">Bandeira:</label>
                     <select id="bandeiraCartao" style="width: 100%; padding: 6px;">
                         <option value="Visa">Visa</option>
@@ -891,21 +900,37 @@
             }
         });
         
-        // Monitora a mudança na forma de pagamento para exibir as opções de cartão
+        // Monitora a mudança na forma de pagamento para adaptar o painel de parcelas
         document.getElementById('formaPagamento').addEventListener('change', (event) => {
-            const painelCartao = document.getElementById('painelCartaoCredito');
+            const painelParcelas = document.getElementById('painelCartaoCredito');
+            const containerBandeira = document.getElementById('containerBandeiraCartao');
+            const tituloPainel = document.getElementById('tituloPainelParcelas');
+            const valorSelecionado = event.target.value;
             
-            if (event.target.value === 'CC') {
-                painelCartao.style.display = 'block';
-                document.getElementById('parcelasCartao').value = '1'; // reseta para 1 parcela por padrão
-            } else {
-                painelCartao.style.display = 'none';
+            document.getElementById('parcelasCartao').value = '1'; // Reseta o contador
+
+            if (valorSelecionado === 'CC') {
+                // Modo Cartão: Mostra tudo (Bandeira + Parcelas)
+                painelParcelas.style.display = 'block';
+                containerBandeira.style.display = 'block';
+                tituloPainel.innerText = '💳 Detalhes do Cartão de Crédito';
+            } 
+            else if (valorSelecionado === 'CR') {
+                // Modo Crediário: Oculta a bandeira, mostra só as parcelas
+                painelParcelas.style.display = 'block';
+                containerBandeira.style.display = 'none';
+                tituloPainel.innerText = '📋 Parcelamento do Crediário';
+            } 
+            else {
+                // Outras formas (Dinheiro/Pix): Oculta o painel inteiro
+                painelParcelas.style.display = 'none';
             }
         });
 
         // 3. Registrar Lançamento de Venda
         // 3. Registrar Lançamento de Venda (VALIDADO COM TRAVA DE CLIENTE BLOQUEADO)
         // 3. Registrar Lançamento de Venda (VALIDADO COM REALCE VISUAL E TIMER DE 10 SEGUNDOS)
+        // 3. Registrar Lançamento de Venda (ATUALIZADO COM SUPORTE E TRAVAS DE CREDIÁRIO)
         document.getElementById('btnRegistrar').addEventListener('click', async () => {
             const statusDiv = document.getElementById('statusLog');
             const cardAlertaBloqueio = document.getElementById('alertaClienteBloqueado');
@@ -913,38 +938,29 @@
             const campoCliente = document.getElementById('buscaCliente');
             const campoTotal = document.getElementById('total');
 
-            // Funçao utilitária para destacar o campo com erro e agendar o sumiço em 10 segundos
+            // Função utilitária para destacar o campo com erro e agendar o sumiço em 10 segundos
             const aplicarDestaqueErro = (elementoCampo, mensagemErro) => {
                 statusDiv.style.display = 'block';
                 statusDiv.className = 'msg-box erro';
                 statusDiv.innerText = mensagemErro;
 
-                // 🎨 Aplica cor e borda vermelha para evidenciar o campo com problema
                 elementoCampo.style.border = '2px solid #dc3545';
                 elementoCampo.style.backgroundColor = '#f8d7da';
                 elementoCampo.focus();
                 if (typeof elementoCampo.select === 'function') elementoCampo.select();
 
-                // ⏱️ TIMER DE 10 SEGUNDOS: Desaparece a mensagem e remove o realce do campo
                 setTimeout(() => {
                     statusDiv.style.display = 'none';
                     statusDiv.innerText = '';
-                    
-                    // Restaura as cores originais/padrão do campo
                     elementoCampo.style.border = '';
                     elementoCampo.style.backgroundColor = '';
-                }, 10000); // 10.000 milissegundos = 10 segundos
+                }, 10000);
             };
 
-            // =====================================================================
-            // 🔒 TRAVA A: Cliente Bloqueado
-            // =====================================================================
+            // Trava de segurança: Cliente Bloqueado
             if (cardAlertaBloqueio && cardAlertaBloqueio.style.display === 'block') {
-                aplicarDestaqueErro(
-                    campoCliente, 
-                    '⚠️ Operação Recusada: O cliente selecionado possui restrições ativas no cadastro. Não é permitido realizar lançamentos até a regularização.'
-                );
-                return; // Aborta
+                aplicarDestaqueErro(campoCliente, '⚠️ Operação Recusada: O cliente selecionado possui restrições ativas no cadastro. Não é permitido realizar lançamentos até a regularização.');
+                return;
             }
 
             // Captura dos campos da tela
@@ -954,6 +970,7 @@
             const formaPagamento = document.getElementById('formaPagamento').value;
             const origem = document.getElementById('origem').value;
             const descricaoMovimento = document.getElementById('descricaoMovimento').value.trim();
+            const clienteId = document.getElementById('clienteSelecionadoId').value;
 
             let bandeira = null;
             let parcelas = 1;
@@ -965,71 +982,82 @@
                 return;
             }
 
-            if (formaPagamento === 'CC') {
-                bandeira = document.getElementById('bandeiraCartao').value;
-                parcelas = parseInt(document.getElementById('parcelasCartao').value) || 1;
-                
-                if (parcelas < 1) {
-                    // Se der erro nas parcelas do cartão, realça o campo de parcelas
-                    aplicarDestaqueErro(document.getElementById('parcelasCartao'), '❌ Erro: O número de parcelas deve ser pelo menos 1!');
+            // 🌟 VALIDAÇÃO INTEGRADA: Obriga a selecionar cliente nominal se for Crediário
+            if (formaPagamento === 'CR') {
+                if (clienteId === '00000000-0000-0000-0000-000000000000' || !clienteId) {
+                    aplicarDestaqueErro(campoCliente, '🛑 Erro de Faturamento: Vendas no Crediário exigem a identificação obrigatória de um Cliente nominal.');
                     return;
                 }
             }
 
-            // =====================================================================
-            // 🔒 TRAVA B: Valor Total Inválido ou Zerado
-            // =====================================================================
+            // Captura das variáveis de parcelamento de forma unificada
+            if (formaPagamento === 'CC') {
+                bandeira = document.getElementById('bandeiraCartao').value;
+                parcelas = parseInt(document.getElementById('parcelasCartao').value) || 1;
+                if (parcelas < 1) {
+                    aplicarDestaqueErro(document.getElementById('parcelasCartao'), '❌ Erro: O número de parcelas deve ser pelo menos 1!');
+                    return;
+                }
+            } else if (formaPagamento === 'CR') {
+                bandeira = null; // 🌟 Força null no front para o Crediário
+                parcelas = parseInt(document.getElementById('parcelasCartao').value) || 1;
+                if (parcelas < 1) {
+                    aplicarDestaqueErro(document.getElementById('parcelasCartao'), '❌ Erro: O número de parcelas deve ser pelo menos 1!');
+                    return;
+                }
+            }
+            
             if (isNaN(total) || total <= 0) {
-                aplicarDestaqueErro(
-                    campoTotal, 
-                    '❌ Erro: O valor total do lançamento deve ser maior que zero!'
-                );
-                return; // Aborta
+                aplicarDestaqueErro(campoTotal, '❌ Erro: O valor total do lançamento deve ser maior que zero!');
+                return;
             }
 
             statusDiv.style.display = 'block';
             statusDiv.className = 'msg-box';
             statusDiv.innerText = "Processando lançamento...";
 
-            const resposta = await ipcRenderer.invoke('efetuar-venda', {
-                caixaId, 
-                operadorId, 
-                total, 
-                formaPagamento, 
-                origem: origem, 
-                descricaoMovimento,
-                bandeira,
-                parcelas,
-                clienteId: document.getElementById('clienteSelecionadoId').value
-            });
+            try {
+                // Dispara o envio ao processo principal (Main)
+                const resposta = await ipcRenderer.invoke('efetuar-venda', {
+                    caixaId, operadorId, total, formaPagamento, origem, descricaoMovimento, bandeira, parcelas, clienteId
+                });
 
-            if (resposta.status === 'sucesso') {
-                statusDiv.innerText = `✅ Movimento salvo!\nModo: ${resposta.modo}`;
-                statusDiv.className = resposta.modo.includes('ONLINE') ? 'msg-box online' : 'msg-box offline';
-                
-                document.getElementById('total').value = "0.00";
-                // 🌟 ADICIONE ESSAS DUAS LINHAS AQUI PARA LIMPAR O CAMPO APÓS A VENDA
-                document.getElementById('buscaCliente').value = "";
-                document.getElementById('clienteSelecionadoId').value = "00000000-0000-0000-0000-000000000000";
-                document.getElementById('descricaoMovimento').value = "";
-                document.getElementById('painelCartaoCredito').style.display = 'none';
-                document.getElementById('formaPagamento').value = "DN";
-                document.getElementById('origem').value = "E";
-                // 🌟 ADICIONADO: Limpa o card de aviso ao finalizar a venda com sucesso
-                document.getElementById('alertaClienteBloqueado').style.display = 'none';
-                document.getElementById('alertaClienteBloqueado').innerText = '';
-                
-                await atualizarTabelaLancamentosJanela();
-                document.getElementById('origem').focus();
+                if (resposta.status === 'sucesso') {
+                    statusDiv.innerText = `✅ Movimento salvo!\nModo: ${resposta.modo}`;
+                    statusDiv.className = resposta.modo.includes('ONLINE') ? 'msg-box online' : 'msg-box offline';
+                    
+                    // Limpa os campos padrão após o sucesso
+                    document.getElementById('total').value = "0.00";
+                    document.getElementById('buscaCliente').value = "";
+                    document.getElementById('clienteSelecionadoId').value = "00000000-0000-0000-0000-000000000000";
+                    document.getElementById('descricaoMovimento').value = "";
+                    document.getElementById('painelCartaoCredito').style.display = 'none';
+                    document.getElementById('formaPagamento').value = "DN";
+                    document.getElementById('origem').value = "E";
+                    
+                    document.getElementById('alertaClienteBloqueado').style.display = 'none';
+                    document.getElementById('alertaClienteBloqueado').innerText = '';
+                    
+                    await atualizarTabelaLancamentosJanela();
+                    document.getElementById('origem').focus();
 
-                setTimeout(() => {
-                    statusDiv.style.display = 'none';
-                    statusDiv.innerText = '';
-                }, 3000);
+                    setTimeout(() => {
+                        statusDiv.style.display = 'none';
+                        statusDiv.innerText = '';
+                    }, 3000);
 
-            } else {
-                statusDiv.innerText = `❌ Erro: ${resposta.mensagem}`;
-                statusDiv.className = 'msg-box erro';
+                } else {
+                    // Se o banco local rejeitar (ex: estouro de limite), captura e destaca o campo correto
+                    if (resposta.mensagem && resposta.mensagem.includes('Limite Insuficiente')) {
+                        aplicarDestaqueErro(campoTotal, `❌ ${resposta.mensagem}`);
+                    } else {
+                        statusDiv.innerText = `❌ Erro: ${resposta.mensagem}`;
+                        statusDiv.className = 'msg-box erro';
+                    }
+                }
+            } catch (err) {
+                // Captura falhas de comunicação IPC ou exceções inesperadas
+                aplicarDestaqueErro(campoTotal, `❌ Falha de processamento: ${err.message}`);
             }
         });
 
@@ -1780,12 +1808,21 @@
             document.getElementById('txtPendentesRecebiveis').innerText = status.recebiveis.pendentes;
             document.getElementById('btnSyncRecebiveis').disabled = (status.recebiveis.pendentes === 0);
             document.getElementById('btnSyncRecebiveis').style.opacity = (status.recebiveis.pendentes === 0) ? '0.5' : '1';
+
+            // 🌟 ADICIONADO: Atualiza os dados de Crediário na Interface
+            document.getElementById('txtTotalCrediario').innerText = status.crediario ? status.crediario.total : 0;
+            document.getElementById('txtPendentesCrediario').innerText = status.crediario ? status.crediario.pendentes : 0;
+            const temCrediarioPendente = status.crediario && status.crediario.pendentes > 0;
+            document.getElementById('btnSyncCrediario').disabled = !temCrediarioPendente;
+            document.getElementById('btnSyncCrediario').style.opacity = !temCrediarioPendente ? '0.5' : '1';
         }
 
         // Listeners de execução de sincronização manual por demanda de tabela
         document.getElementById('btnSyncVendas').addEventListener('click', () => dispararFluxoSyncTabela('vendas'));
         document.getElementById('btnSyncTurnos').addEventListener('click', () => dispararFluxoSyncTabela('turnos'));
         document.getElementById('btnSyncRecebiveis').addEventListener('click', () => dispararFluxoSyncTabela('recebiveis'));
+        // Listener de execução manual para o Crediário
+        document.getElementById('btnSyncCrediario').addEventListener('click', () => dispararFluxoSyncTabela('crediario'));
 
         async function dispararFluxoSyncTabela(tipo) {
             imprimirNoConsoleSync(`[INFO] Conectando ao servidor para processar lote de ${tipo.toUpperCase()}...`);

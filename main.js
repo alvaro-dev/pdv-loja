@@ -170,6 +170,7 @@ ipcMain.handle('efetuar-venda', async (event, dadosVenda) => {
 
 // Canal para carregar os dados do caixa na inicialização
 // Canal para carregar os dados do caixa na inicialização com metadados corporativos
+// Canal para carregar os dados do caixa na inicialização de forma ASSÍNCRONA (Não Bloqueante)
 ipcMain.handle('carregar-caixa', async (event, caixaId) => {
     try {
         const caixa = await db.obterDadosCaixa(caixaId);
@@ -178,19 +179,25 @@ ipcMain.handle('carregar-caixa', async (event, caixaId) => {
             return { status: 'erro', mensagem: 'Caixa não cadastrado para este ponto de venda ou está bloqueado!' };
         }
         
-        // 🌟 ADICIONADO AQUI: Agora que o caixa carregou os IDs em memória, dispara o Sync de Operadores com segurança!
+        // 🌟 EVOLUÇÃO: Removemos o .then() travado e o await. 
+        // Os métodos abaixo são disparados, mas o fluxo do código NÃO ESPERA eles terminarem!
+        
+        // Sincronização de Operadores rodando em background
         db.sincronizarOperadores()
-            .then(res => console.log(`[SYNC-AUTOMATICO] Operadores autorizados sincronizados:`, res))
-            .catch(err => console.error(`[SYNC-AUTOMATICO] Falha no sync de operadores:`, err.message));
+            .then(res => console.log(`[SYNC-BACKGROUND] Operadores autorizados sincronizados:`, res))
+            .catch(err => console.error(`[SYNC-BACKGROUND] Falha no sync de operadores em background:`, err.message));
         
-        // 🌟 NOVO: Dispara a sincronização de clientes em background
+        // Sincronização de Clientes rodando em background
         db.sincronizarClientes()
-            .then(res => console.log(`[SYNC-AUTOMATICO] Clientes (Global/Filial) prontos:`, res))
-            .catch(err => console.error(`[SYNC-AUTOMATICO] Falha no sync de clientes:`, err.message));
+            .then(res => console.log(`[SYNC-BACKGROUND] Clientes com limite líquido atualizados:`, res))
+            .catch(err => console.error(`[SYNC-BACKGROUND] Falha no sync de clientes em background:`, err.message));
         
-        // Retorna o objeto completo incluindo empresa_id e filial_id para o index.html
+        // 🚀 RESPONDE IMEDIATAMENTE PRO FRONT-END: 
+        // A tela de vendas abre em milissegundos usando os dados pré-existentes do SQLite!
         return { status: 'sucesso', dados: caixa };
+
     } catch (error) {
+        console.error("Erro no carregamento do caixa:", error);
         return { status: 'erro', mensagem: error.message };
     }
 });

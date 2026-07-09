@@ -295,7 +295,8 @@ class DatabaseManager {
                 bloqueado TEXT NOT NULL DEFAULT 'N',
                 deletado INTEGER NOT NULL DEFAULT 0, -- 0 = false, 1 = true
                 usuario_pdv TEXT NOT NULL DEFAULT 'N',
-                trocar_senha_prox_login TEXT NOT NULL DEFAULT 'N'
+                trocar_senha_prox_login TEXT NOT NULL DEFAULT 'N',
+                data_alteracao TEXT DEFAULT '1970-01-01 00:00:00' -- 🌟 NOVO
             )
         `);
         
@@ -312,26 +313,7 @@ class DatabaseManager {
             )
         `);
         
-        // 3. Cria a nova tabela de vendas locais (ATUALIZADA)
-        // 🛠️ ATUALIZADO: Incluindo 'bandeira' e 'parcelas' na criação da tabela local
-        this.sqliteDb.run(`
-            CREATE TABLE IF NOT EXISTS vendas_locais (
-                id TEXT PRIMARY KEY,
-                caixa_id TEXT NOT NULL,
-                operador_id TEXT NOT NULL,
-                forma_pagamento TEXT NOT NULL,
-                origem TEXT NOT NULL,
-                total REAL NOT NULL,
-                descricao_movimento TEXT,
-                data_venda TEXT NOT NULL,
-                sincronizado INTEGER DEFAULT 0,
-                deletado INTEGER DEFAULT 0,
-                bandeira TEXT,         -- 🌟 ADICIONADO AQUI
-                parcelas INTEGER DEFAULT 1 -- 🌟 ADICIONADO AQUI
-            )
-        `);
-
-        // 3. Cria a nova tabela de vendas locais (ATUALIZADA COM CLIENTE_ID)
+        // 3. Cria a nova tabela de vendas locais
         this.sqliteDb.run(`
             CREATE TABLE IF NOT EXISTS vendas_locais (
                 id TEXT PRIMARY KEY,
@@ -394,7 +376,22 @@ class DatabaseManager {
                 cpf TEXT,
                 limite_credito REAL DEFAULT 0.00,
                 bloqueado TEXT NOT NULL DEFAULT 'N',
-                deletado INTEGER NOT NULL DEFAULT 0
+                deletado INTEGER NOT NULL DEFAULT 0,
+                data_alteracao TEXT DEFAULT '1970-01-01 00:00:00' -- 🌟 NOVO
+            )
+        `);
+
+        // 7. Tabela de Apoio ao Crediário Local (Versão Ultra-Leve e Simplificada)
+        this.sqliteDb.run(`
+            CREATE TABLE IF NOT EXISTS contas_a_receber_locais (
+                id TEXT PRIMARY KEY,
+                venda_id TEXT NOT NULL,
+                cliente_id TEXT NOT NULL,
+                data_vencimento TEXT NOT NULL,
+                valor_original REAL NOT NULL,
+                status TEXT NOT NULL DEFAULT 'P', -- 'P' = Pendente, 'R' = Recebido
+                sincronizado INTEGER DEFAULT 0,
+                deletado INTEGER DEFAULT 0
             )
         `);
     }
@@ -405,48 +402,54 @@ class DatabaseManager {
             return { status: 'offline', manager: 'Sem conexão estabelecida com o servidor.' };
         }
 
-        // 🌟 NOVA VALIDAÇÃO DE SEGURANÇA: Se o terminal não carregou a Empresa/Filial local, não sabe quem sincronizar
         if (!this.tenantEmpresaId || !this.tenantFilialId) {
-            console.log("[SYNC] ⚠️ Empresa ou Filial do terminal não carregadas em memória. Abortando sync de operadores por segurança.");
+            console.log("[SYNC] ⚠️ IDs de governança ausentes no boot. Abortando sync.");
             return { status: 'erro', mensagem: 'IDs de governança ausentes no boot.' };
         }
 
         try {
-            console.log(`[SYNC] Buscando operadores permitidos para a Empresa: ${this.tenantEmpresaId} | Filial: ${this.tenantFilialId}...`);
+            // 🔎 1. Busca a maior data de alteração que o SQLite possui guardada localmente
+            const ultimaAtualizacao = await new Promise((resolve) => {
+                this.sqliteDb.get(`SELECT COALESCE(MAX(data_alteracao), '1970-01-01 00:00:00') as ultima FROM usuarios_locais`, (err, row) => {
+                    resolve(row ? row.ultima : '1970-01-01 00:00:00');
+                });
+            });
+
+            console.log(`[SYNC-INCREMENTAL] Buscando operadores modificados no Postgres após: ${ultimaAtualizacao}`);
             
-            // 🌟 CONSULTA POSTGRESQL ATUALIZADA:
-            // Cruza a tabela 'usuarios' com a 'usuarios_acessos' para validar quem tem permissão explícita nesta unidade
-            // 🌟 CONSULTA POSTGRESQL CORRIGIDA: Removido o filtro 'a.deletado' que não existe na pivô
+            // 📑 2. Consulta filtrando estritamente por u.data_alteracao > ultimaAtualizacao do caixa
+            // 📑 2. Consulta filtrando com truncamento de segundos para ignorar milissegundos
             const queryPG = `
                 SELECT DISTINCT
-                    u.id, 
-                    u.usuario, 
-                    u.nome, 
-                    u.senha, 
-                    u.role, 
-                    u.bloqueado, 
-                    u.usuario_pdv, 
-                    u.trocar_senha_prox_login
+                    u.id, u.usuario, u.nome, u.senha, u.role, u.bloqueado, 
+                    u.usuario_pdv, u.trocar_senha_prox_login,
+                    TO_CHAR(u.data_alteracao, 'YYYY-MM-DD HH24:MI:SS') as data_alteracao
                 FROM usuarios u
                 JOIN usuarios_acessos a ON a.usuario_id = u.id
                 WHERE u.usuario_pdv = 'S' 
                   AND u.deletado = false
                   AND a.empresa_id = $1 
                   AND a.filial_id = $2
+                  AND DATE_TRUNC('second', u.data_alteracao) > $3::timestamp
             `;
             
-            const resultado = await this.pgClient.query(queryPG, [this.tenantEmpresaId, this.tenantFilialId]);
-            const operadoresServidor = resultado.rows;
+            const resultado = await this.pgClient.query(queryPG, [this.tenantEmpresaId, this.tenantFilialId, ultimaAtualizacao]);
+            const operadoresNovos = resultado.rows;
 
-            console.log(`[SYNC] Gravar ${operadoresServidor.length} operadores autorizados no SQLite...`);
+            if (operadoresNovos.length === 0) {
+                console.log("[SYNC-INCREMENTAL] 🏆 Base de operadores locais já está 100% atualizada.");
+                return { status: 'sucesso', total: 0 };
+            }
+
+            console.log(`[SYNC-INCREMENTAL] Injetando ${operadoresNovos.length} atualizações de operadores no SQLite...`);
 
             return new Promise((resolve, reject) => {
                 this.sqliteDb.serialize(() => {
                     this.sqliteDb.run("BEGIN TRANSACTION");
 
                     const stmt = this.sqliteDb.prepare(`
-                        INSERT INTO usuarios_locais (id, usuario, nome, senha, role, bloqueado, usuario_pdv, trocar_senha_prox_login)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        INSERT INTO usuarios_locais (id, usuario, nome, senha, role, bloqueado, usuario_pdv, trocar_senha_prox_login, data_alteracao)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                         ON CONFLICT(usuario) DO UPDATE SET 
                             id = excluded.id,
                             nome = excluded.nome,
@@ -454,32 +457,25 @@ class DatabaseManager {
                             role = excluded.role,
                             bloqueado = excluded.bloqueado,
                             usuario_pdv = excluded.usuario_pdv,
-                            trocar_senha_prox_login = excluded.trocar_senha_prox_login
+                            trocar_senha_prox_login = excluded.trocar_senha_prox_login,
+                            data_alteracao = excluded.data_alteracao
                     `);
 
-                    for (const op of operadoresServidor) {
-                        stmt.run([op.id, op.usuario, op.nome, op.senha, op.role, op.bloqueado, op.usuario_pdv, op.trocar_senha_prox_login]);
+                    for (const op of operadoresNovos) {
+                        stmt.run([op.id, op.usuario, op.nome, op.senha, op.role, op.bloqueado, op.usuario_pdv, op.trocar_senha_prox_login, op.data_alteracao]);
                     }
 
                     stmt.finalize();
-
                     this.sqliteDb.run("COMMIT", (err) => {
-                        if (err) {
-                            reject(err);
-                        } else {
-                            resolve({ status: 'sucesso', total: operadoresServidor.length });
-                        }
+                        if (err) reject(err);
+                        else resolve({ status: 'sucesso', total: operadoresNovos.length });
                     });
                 });
             });
 
         } catch (error) {
-            console.error("[SYNC] Conexão com o Postgres falhou durante a sincronização de operadores:", error.message);
-            this.isOnline = false; 
-            return { 
-                status: 'offline_contingencia', 
-                mensagem: 'Conexão perdida com o servidor. Usando dados locais pré-existentes.' 
-            };
+            console.error("[SYNC] Erro no lote incremental de operadores:", error.message);
+            return { status: 'erro', mensagem: error.message };
         }
     }
 
@@ -495,82 +491,92 @@ class DatabaseManager {
         }
 
         try {
-            console.log("[SYNC-CLIENTES] Consultando escopo de distribuição da tabela 'clientes'...");
-            
-            // 🔎 1. Consulta dinâmica na tabela de escopos do sistema
             const queryEscopo = "SELECT escopo FROM tabelas_escopo WHERE tabela_nome = 'clientes'";
             const resEscopo = await this.pgClient.query(queryEscopo);
-            
-            // Se não achar registro, assume 'COMPARTILHADO' por segurança padrão
             const escopoAtual = resEscopo.rows.length > 0 ? String(resEscopo.rows[0].escopo).toUpperCase() : 'COMPARTILHADO';
-            console.log(`[SYNC-CLIENTES] Regra de escopo identificada: "${escopoAtual}"`);
+
+            // 🔎 1. Busca a maior data de alteração que o SQLite possui guardada localmente para clientes
+            const ultimaAtualizacaoClientes = await new Promise((resolve) => {
+                this.sqliteDb.get(`SELECT COALESCE(MAX(data_alteracao), '1970-01-01 00:00:00') as ultima FROM clientes_locais`, (err, row) => {
+                    resolve(row ? row.ultima : '1970-01-01 00:00:00');
+                });
+            });
+
+            console.log(`[SYNC-CLIENTES-INCREMENTAL] Verificando novos clientes após: ${ultimaAtualizacaoClientes}`);
 
             let queryPG = "";
             let parametrosPG = [];
 
-            // 📑 2. Montagem da Query do Postgres baseada estritamente no escopo configurado
+            // 📑 2. Montagem de Query Híbrida: Limite líquido + Filtro dinâmico de timestamp incremental (c.data_alteracao)
             if (escopoAtual === 'COMPARTILHADO') {
-                // Traz todos os clientes do grupo econômico (Filial nula)
                 queryPG = `
-                    SELECT id, empresa_id, filial_id, nome, cpf, limite_credito, bloqueado
-                    FROM clientes
-                    WHERE empresa_id = $1 
-                      AND filial_id IS NULL
-                      AND deletado = false
+                    SELECT 
+                        c.id, c.empresa_id, c.filial_id, c.nome, c.cpf, c.bloqueado,
+                        TO_CHAR(c.data_alteracao, 'YYYY-MM-DD HH24:MI:SS') as data_alteracao,
+                        (COALESCE(c.limite_credito, 0) - COALESCE((SELECT SUM(saldo_restante) FROM contas_a_receber WHERE cliente_id = c.id AND status = 'P' AND deletado = false), 0)) as limite_restante
+                    FROM clientes c
+                    WHERE c.empresa_id = $1 
+                    AND c.filial_id IS NULL
+                    AND c.deletado = false
+                    AND DATE_TRUNC('second', c.data_alteracao) > $2::timestamp
                 `;
-                parametrosPG = [this.tenantEmpresaId];
+                    parametrosPG = [this.tenantEmpresaId, ultimaAtualizacaoClientes];
             } else {
-                // EXCLUSIVO: Traz estritamente os clientes mapeados na filial deste terminal
                 queryPG = `
-                    SELECT id, empresa_id, filial_id, nome, cpf, limite_credito, bloqueado
-                    FROM clientes
-                    WHERE empresa_id = $1 
-                      AND filial_id = $2
-                      AND deletado = false
+                    SELECT 
+                        c.id, c.empresa_id, c.filial_id, c.nome, c.cpf, c.bloqueado,
+                        TO_CHAR(c.data_alteracao, 'YYYY-MM-DD HH24:MI:SS') as data_alteracao,
+                        (COALESCE(c.limite_credito, 0) - COALESCE((SELECT SUM(saldo_restante) FROM contas_a_receber WHERE cliente_id = c.id AND status = 'P' AND deletado = false), 0)) as limite_restante
+                    FROM clientes c
+                    WHERE c.empresa_id = $1 
+                      AND c.filial_id = $2
+                      AND c.deletado = false
+                      AND DATE_TRUNC('second', c.data_alteracao) > $3::timestamp
                 `;
-                parametrosPG = [this.tenantEmpresaId, this.tenantFilialId];
+                parametrosPG = [this.tenantEmpresaId, this.tenantFilialId, ultimaAtualizacaoClientes];
             }
 
-            console.log(`[SYNC-CLIENTES] Baixando registros da nuvem para a Empresa ${this.tenantEmpresaId}...`);
             const resultado = await this.pgClient.query(queryPG, parametrosPG);
-            const clientesServidor = resultado.rows;
+            const clientesNovos = resultado.rows;
 
-            console.log(`[SYNC-CLIENTES] Salvando ${clientesServidor.length} clientes validados no SQLite local...`);
+            if (clientesNovos.length === 0) {
+                console.log("[SYNC-CLIENTES-INCREMENTAL] 🏆 Base de clientes locais já está 100% atualizada.");
+                return { status: 'sucesso', total: 0 };
+            }
+
+            console.log(`[SYNC-CLIENTES-INCREMENTAL] Salvando ${clientesNovos.length} novos registros modificados no SQLite...`);
 
             return new Promise((resolve, reject) => {
                 this.sqliteDb.serialize(() => {
                     this.sqliteDb.run("BEGIN TRANSACTION");
 
                     const stmt = this.sqliteDb.prepare(`
-                        INSERT INTO clientes_locais (id, empresa_id, filial_id, nome, cpf, limite_credito, bloqueado, deletado)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, 0)
+                        INSERT INTO clientes_locais (id, empresa_id, filial_id, nome, cpf, limite_credito, bloqueado, deletado, data_alteracao)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)
                         ON CONFLICT(id) DO UPDATE SET 
                             nome = excluded.nome,
                             cpf = excluded.cpf,
                             limite_credito = excluded.limite_credito,
                             bloqueado = excluded.bloqueado,
-                            filial_id = excluded.filial_id
+                            filial_id = excluded.filial_id,
+                            data_alteracao = excluded.data_alteracao
                     `);
 
-                    for (const cli of clientesServidor) {
-                        stmt.run([cli.id, cli.empresa_id, cli.filial_id, cli.nome, cli.cpf, parseFloat(cli.limite_credito || 0), cli.bloqueado]);
+                    for (const cli of clientesNovos) {
+                        const saldoDisponivel = parseFloat(cli.limite_restante || 0);
+                        stmt.run([cli.id, cli.empresa_id, cli.filial_id, cli.nome, cli.cpf, saldoDisponivel, cli.bloqueado, cli.data_alteracao]);
                     }
 
                     stmt.finalize();
-
                     this.sqliteDb.run("COMMIT", (err) => {
-                        if (err) {
-                            console.error("[SYNC-CLIENTES] Erro ao commitar transação:", err);
-                            reject(err);
-                        } else {
-                            resolve({ status: 'sucesso', total: clientesServidor.length });
-                        }
+                        if (err) reject(err);
+                        else resolve({ status: 'sucesso', total: clientesNovos.length });
                     });
                 });
             });
 
         } catch (error) {
-            console.error("[SYNC-CLIENTES] Erro fatal ao sincronizar clientes baseado em escopo:", error.message);
+            console.error("[SYNC-CLIENTES] Erro fatal no lote incremental:", error.message);
             return { status: 'erro', mensagem: error.message };
         }
     }
@@ -675,14 +681,68 @@ class DatabaseManager {
 
     async registrarVenda(caixaId, operadorId, total, formaPagamento, origem, descricaoMovimento, bandeira = null, parcelas = 1, clienteId = '00000000-0000-0000-0000-000000000000') {
         const idVenda = crypto.randomUUID();
-        // 🌟 CORREÇÃO: Data da venda gravada com base no relógio local do Windows
         const dataAtual = obterDataHoraLocalANSI();
 
-        // 1. SALVA A VENDA NO SQLITE LOCAL PRIMEIRO (ATUALIZADO COM CLIENTE_ID)
+        // =====================================================================
+        // 🔒 TRAVA DE CRÉDITO HÍBRIDA: Checagem em Tempo Real na Rede (CR)
+        // =====================================================================
+        if (formaPagamento === 'CR') {
+            
+            // 🌟 TRAVA DE SEGURANÇA: Garante que vendas em Crediário nunca salvem informações de bandeira de cartão
+            bandeira = null;
+            
+            if (clienteId === '00000000-0000-0000-0000-000000000000' || !clienteId) {
+                throw new Error("Operação Recusada: Vendas no Crediário exigem obrigatoriamente a identificação de um Cliente nominal.");
+            }
+
+            const dadosCliente = await new Promise((resolve) => {
+                this.sqliteDb.get(`SELECT nome, limite_credito FROM clientes_locais WHERE id = ?`, [clienteId], (err, row) => resolve(row));
+            });
+
+            if (!dadosCliente) {
+                throw new Error("Operação Recusada: Cliente não localizado na base de dados do terminal.");
+            }
+
+            const tetoCadastrado = parseFloat(dadosCliente.limite_credito || 0);
+            const valorVendaAtual = parseFloat(total || 0);
+            let totalDebitosAtuais = 0;
+
+            if (this.isOnline) {
+                try {
+                    const querySaldoGlobal = `
+                        SELECT COALESCE(SUM(saldo_restante), 0) as total_devido 
+                        FROM contas_a_receber 
+                        WHERE cliente_id = $1 AND status = 'P' AND deletado = false
+                    `;
+                    const resSaldoGlobal = await this.pgClient.query(querySaldoGlobal, [clienteId]);
+                    totalDebitosAtuais = parseFloat(resSaldoGlobal.rows[0].total_devido || 0);
+                } catch (err) {
+                    this.isOnline = false;
+                }
+            }
+
+            if (!this.isOnline) {
+                totalDebitosAtuais = await new Promise((resolve) => {
+                    this.sqliteDb.get(
+                        `SELECT COALESCE(SUM(valor_original), 0) as total_devido FROM contas_a_receber_locais WHERE cliente_id = ? AND status = 'P' AND deletado = 0`,
+                        [clienteId],
+                        (err, row) => resolve(row ? (row.total_devido || 0) : 0)
+                    );
+                });
+            }
+
+            const limiteDisponivel = tetoCadastrado - totalDebitosAtuais;
+
+            if ((totalDebitosAtuais + valorVendaAtual) > tetoCadastrado) {
+                throw new Error(`Limite Insuficiente: O cliente "${dadosCliente.nome}" possui teto de R$ ${tetoCadastrado.toFixed(2)}. Ele já possui R$ ${totalDebitosAtuais.toFixed(2)} em débitos em aberto na rede. Limite restante: R$ ${limiteDisponivel.toFixed(2)}. Esta nova compra totaliza R$ ${valorVendaAtual.toFixed(2)}.`);
+            }
+        }
+
+        // 1. SALVA A VENDA NO SQLITE LOCAL PRIMEIRO
         await new Promise((resolve, reject) => {
             const queryLite = `
                 INSERT INTO vendas_locais (id, caixa_id, operador_id, cliente_id, forma_pagamento, origem, total, descricao_movimento, data_venda, sincronizado, deletado, bandeira, parcelas) 
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)
             `;
             this.sqliteDb.run(
                 queryLite, 
@@ -691,15 +751,37 @@ class DatabaseManager {
             );
         });
 
-        // GENERACAO DE PARCELAS NO SQLITE LOCAL
+        // 2. 🌟 NOVO: GERAÇÃO DE PARCELAS NO CREDIÁRIO DESMEMBRADO (CR) NO SQLITE
+        if (formaPagamento === 'CR' && total > 0) {
+            const valorPorParcela = total / parcelas;
+            
+            // Adiciona a coluna parcela_numero na tabela temporária se necessário, ou guardamos em lote estruturado
+            for (let i = 1; i <= parcelas; i++) {
+                const idConta = crypto.randomUUID();
+                const dataVencimento = new Date();
+                dataVencimento.setDate(dataVencimento.getDate() + (30 * i)); // 30, 60, 90 dias...
+                const dataVencimentoStr = obterDataHoraLocalANSI(dataVencimento).split(' ')[0];
+
+                await new Promise((resolve, reject) => {
+                    // Adicionamos no banco local o valor individual calculado da parcela
+                    const queryCRLite = `
+                        INSERT INTO contas_a_receber_locais (id, venda_id, cliente_id, data_vencimento, valor_original, status, sincronizado, deletado)
+                        VALUES (?, ?, ?, ?, ?, 'P', 0, 0)
+                    `;
+                    this.sqliteDb.run(queryCRLite, [idConta, idVenda, clienteId, dataVencimentoStr, valorPorParcela], (err) => {
+                        if (err) reject(err); else resolve();
+                    });
+                });
+            }
+        }
+
+        // GERAÇÃO DE PARCELAS SE FOR CARTÃO (CC) NO SQLITE LOCAL
         if (formaPagamento === 'CC' && total > 0) {
             const valorPorParcela = total / parcelas;
             for (let i = 1; i <= parcelas; i++) {
                 const idRecebivel = crypto.randomUUID();
                 const dataPrevista = new Date();
                 dataPrevista.setDate(dataPrevista.getDate() + (30 * i));
-                
-                // 🌟 CORREÇÃO: Formata a data de recebimento futuro sem fuso UTC
                 const dataPrevistaStr = obterDataHoraLocalANSI(dataPrevista);
 
                 await new Promise((resolve, reject) => {
@@ -713,47 +795,57 @@ class DatabaseManager {
             }
         }
 
-        // 2. SE ESTIVER ONLINE, REPLICA TUDO PRO POSTGRES UTILIZANDO O TENANT DO CAIXA
-        // 2. SE ESTIVER ONLINE, REPLICA TUDO PRO POSTGRES SEGUINDO A REGRA DE ESCOPO DE VENDAS
+        // 3. REPLICAÇÃO EM TEMPO REAL PRO POSTGRESQL (SE ONLINE)
         if (this.isOnline) {
             try {
-                // Captura a Empresa e Filial vinculadas ao Caixa ativo
                 const resCx = await this.pgClient.query('SELECT empresa_id, filial_id FROM caixas WHERE id = $1', [caixaId]);
                 if (resCx.rows.length === 0) throw new Error('Caixa operacional não localizado no PostgreSQL.');
-                
                 const { empresa_id, filial_id } = resCx.rows[0];
 
-                // 🔎 NOVO: Consulta dinâmica do escopo para a tabela 'vendas'
                 const resEscopo = await this.pgClient.query("SELECT escopo FROM tabelas_escopo WHERE tabela_nome = 'vendas'");
                 const escopoVendas = resEscopo.rows.length > 0 ? String(resEscopo.rows[0].escopo).toUpperCase() : 'EXCLUSIVO';
-
-                // 🌟 REGRA DE NEGÓCIO DO ESCOPO: Se vendas for COMPARTILHADO, a filial vai como NULL para o Postgres
                 const filialPgValor = (escopoVendas === 'COMPARTILHADO') ? null : filial_id;
 
-                // Insere Venda no PG respeitando a regra de filial nula/preenchida
                 const queryPG = `
                     INSERT INTO vendas (id, caixa_id, operador_id, cliente_id, forma_pagamento, origem, total, descricao_movimento, data_venda, bandeira, parcelas, empresa_id, filial_id) 
                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
                 `;
+                await this.pgClient.query(queryPG, [idVenda, caixaId, operadorId, clienteId, formaPagamento, origem, total, descricaoMovimento, dataAtual, bandeira, parcelas, empresa_id, filialPgValor]);
                 
-                const clientePgValor = (clienteId === '00000000-0000-0000-0000-000000000000' || !clienteId) 
-                    ? '00000000-0000-0000-0000-000000000000' 
-                    : clienteId;
-                
-                await this.pgClient.query(queryPG, [idVenda, caixaId, operadorId, clientePgValor, formaPagamento, origem, total, descricaoMovimento, dataAtual, bandeira, parcelas, empresa_id, filialPgValor]);
-                
-                // Se gerou parcelas, move os recebíveis locais seguindo a mesma regra de filial da venda pai
+                // 🌟 NOVO: UPLOAD DAS MÚLTIPLAS PARCELAS DE CREDIÁRIO PRO SEU POSTGRES REAL
+                if (formaPagamento === 'CR') {
+                    const contasLocais = await new Promise((resolve) => {
+                        this.sqliteDb.all(`SELECT * FROM contas_a_receber_locais WHERE venda_id = ?`, [idVenda], (err, rows) => resolve(rows || []));
+                    });
+                    
+                    const resEscopoCR = await this.pgClient.query("SELECT escopo FROM tabelas_escopo WHERE tabela_nome = 'contas_a_receber'");
+                    const escopoCR = resEscopoCR.rows.length > 0 ? String(resEscopoCR.rows[0].escopo).toUpperCase() : 'EXCLUSIVO';
+                    const filialCRPgValor = (escopoCR === 'COMPARTILHADO') ? null : filial_id;
+
+                    // Mapeia todas as colunas estruturais reais da sua tabela, calculando dinamicamente o número da iteração
+                    let nrParcela = 1;
+                    for (const conta of contasLocais) {
+                        const queryCRPostgres = `
+                            INSERT INTO contas_a_receber (id, empresa_id, filial_id, venda_id, cliente_id, parcela_numero, total_parcelas, data_emissao, data_vencimento, valor_original, valor_juros, valor_multa, valor_pago, saldo_restante, status, deletado)
+                            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 0.00, 0.00, 0.00, $11, 'P', false)
+                        `;
+                        
+                        await this.pgClient.query(queryCRPostgres, [
+                            conta.id, empresa_id, filialCRPgValor, idVenda, clienteId,
+                            nrParcela, parcelas, dataAtual, conta.data_vencimento, conta.valor_original, conta.valor_original
+                        ]);
+
+                        this.sqliteDb.run(`UPDATE contas_a_receber_locais SET sincronizado = 1 WHERE id = ?`, [conta.id]);
+                        nrParcela++;
+                    }
+                }
+
                 if (formaPagamento === 'CC') {
                     const recebiveis = await new Promise((resolve) => {
                         this.sqliteDb.all(`SELECT * FROM recebiveis_cartao_locais WHERE venda_id = ?`, [idVenda], (err, rows) => resolve(rows || []));
                     });
-
                     for (const rec of recebiveis) {
-                        await this.pgClient.query(`
-                            INSERT INTO recebiveis_cartao (id, venda_id, caixa_id, parcela_numero, valor_parcela, data_prevista_recebimento, status, empresa_id, filial_id)
-                            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-                        `, [rec.id, idVenda, caixaId, rec.parcela_numero, rec.valor_parcela, rec.data_prevista_recebimento, 'P', empresa_id, filialPgValor]);
-                        
+                        await this.pgClient.query(`INSERT INTO recebiveis_cartao (id, venda_id, caixa_id, parcela_numero, valor_parcela, data_prevista_recebimento, status, empresa_id, filial_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`, [rec.id, idVenda, caixaId, rec.parcela_numero, rec.valor_parcela, rec.data_prevista_recebimento, 'P', empresa_id, filialPgValor]);
                         this.sqliteDb.run(`UPDATE recebiveis_cartao_locais SET sincronizado = 1 WHERE id = ?`, [rec.id]);
                     }
                 }
@@ -857,6 +949,41 @@ class DatabaseManager {
                                 
                                 // Atualiza a flag local do SQLite marcando como enviado com sucesso
                                 this.sqliteDb.run(`UPDATE recebiveis_cartao_locais SET sincronizado = 1 WHERE id = ?`, [r.id]);
+                            }
+                        }
+
+                        // =====================================================================
+                        // 📊 ADICIONADO: Sincronização Dinâmica de Contas a Receber (Crediário)
+                        // =====================================================================
+                        // =====================================================================
+                        // 📊 ATUALIZADO: Sincronização de Múltiplas Parcelas do Crediário
+                        // =====================================================================
+                        if (venda.forma_pagamento === 'CR') {
+                            const contasLocais = await new Promise((resolve) => {
+                                this.sqliteDb.all(`SELECT * FROM contas_a_receber_locais WHERE venda_id = ? AND sincronizado = 0`, [venda.id], (err, rows) => resolve(rows || []));
+                            });
+
+                            if (contasLocais.length > 0) {
+                                const resEscopoCR = await this.pgClient.query("SELECT escopo FROM tabelas_escopo WHERE tabela_nome = 'contas_a_receber'");
+                                const escopoCR = resEscopoCR.rows.length > 0 ? String(resEscopoCR.rows[0].escopo).toUpperCase() : 'EXCLUSIVO';
+                                const filialCRPgValor = (escopoCR === 'COMPARTILHADO') ? null : filId;
+
+                                let nrP = 1;
+                                for (const conta of contasLocais) {
+                                    const queryCRPostgres = `
+                                        INSERT INTO contas_a_receber (id, empresa_id, filial_id, venda_id, cliente_id, parcela_numero, total_parcelas, data_emissao, data_vencimento, valor_original, valor_juros, valor_multa, valor_pago, saldo_restante, status, deletado)
+                                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 0.00, 0.00, 0.00, $11, 'P', false)
+                                        ON CONFLICT (id) DO UPDATE SET status = excluded.status
+                                    `;
+                                    
+                                    await this.pgClient.query(queryCRPostgres, [
+                                        conta.id, empId, filialCRPgValor, venda.id, venda.cliente_id,
+                                        nrP, venda.parcelas, venda.data_venda, conta.data_vencimento, conta.valor_original, conta.valor_original
+                                    ]);
+
+                                    this.sqliteDb.run(`UPDATE contas_a_receber_locais SET sincronizado = 1 WHERE id = ?`, [conta.id]);
+                                    nrP++;
+                                }
                             }
                         }
 
@@ -1185,7 +1312,9 @@ class DatabaseManager {
         const tabelas = {
             vendas: 'vendas_locais',
             turnos: 'movimentos_caixa_locais',
-            recebiveis: 'recebiveis_cartao_locais'
+            recebiveis: 'recebiveis_cartao_locais',
+            // 🌟 ADICIONADO: Vincula a tabela de crediário local no contador de auditoria
+            crediario: 'contas_a_receber_locais'
         };
         const resultado = {};
 
@@ -1308,6 +1437,49 @@ class DatabaseManager {
                 await this.pgClient.query(queryPG, [r.id, r.venda_id, r.caixa_id, r.parcela_numero, r.valor_parcela, r.data_prevista_recebimento, r.status, r.deletado === 1, empId, filialPgValor]);
                 this.sqliteDb.run(`UPDATE recebiveis_cartao_locais SET sincronizado = 1 WHERE id = ?`, [r.id]);
                 logs.push(`[SUCESSO] Recebível ID ${r.id.substring(0,8)}... espelhado com a nuvem.`);
+            }
+        }
+        else if (tipo === 'crediario') {
+            const pendentes = await new Promise((resolve) => {
+                this.sqliteDb.all(`SELECT * FROM contas_a_receber_locais WHERE sincronizado = 0`, [], (err, rows) => resolve(rows || []));
+            });
+            logs.push(`[INFO] Encontrados ${pendentes.length} títulos de parcelas de crediário pendentes.`);
+
+            const resEscopoCR = await this.pgClient.query("SELECT escopo FROM tabelas_escopo WHERE tabela_nome = 'contas_a_receber'");
+            const escopoCR = resEscopoCR.rows.length > 0 ? String(resEscopoCR.rows[0].escopo).toUpperCase() : 'EXCLUSIVO';
+
+            for (const c of pendentes) {
+                const resCx = await this.pgClient.query('SELECT empresa_id, filial_id FROM caixas WHERE id = (SELECT caixa_id FROM vendas_locais WHERE id = $1)', [c.venda_id]);
+                const empId = resCx.rows[0]?.empresa_id;
+                const filId = resCx.rows[0]?.filial_id;
+                
+                const filialCRPgValor = (escopoCR === 'COMPARTILHADO') ? null : filId;
+
+                // Captura metadados da venda pai para estruturar o total de parcelamento correto
+                const vendaPai = await new Promise((resolve) => {
+                    this.sqliteDb.get(`SELECT data_venda, parcelas FROM vendas_locais WHERE id = ?`, [c.venda_id], (err, row) => resolve(row));
+                });
+                const dataEmissao = vendaPai ? vendaPai.data_venda : obterDataHoraLocalANSI();
+                const totalParcelasVenda = vendaPai ? vendaPai.parcelas : 1;
+
+                // Descobre a numeração de parcela fazendo contagem de registros anteriores da mesma venda
+                const ordemParcela = await new Promise((resolve) => {
+                    this.sqliteDb.get(`SELECT COUNT(*) as indexador FROM contas_a_receber_locais WHERE venda_id = ? AND id <= ?`, [c.venda_id, c.id], (err, row) => resolve(row ? row.indexador : 1));
+                });
+
+                const queryCRPostgres = `
+                    INSERT INTO contas_a_receber (id, empresa_id, filial_id, venda_id, cliente_id, parcela_numero, total_parcelas, data_emissao, data_vencimento, valor_original, valor_juros, valor_multa, valor_pago, saldo_restante, status, deletado)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 0.00, 0.00, 0.00, $11, 'P', false)
+                    ON CONFLICT (id) DO UPDATE SET status = excluded.status
+                `;
+                
+                await this.pgClient.query(queryCRPostgres, [
+                    c.id, empId, filialCRPgValor, c.venda_id, c.cliente_id, 
+                    ordemParcela, totalParcelasVenda, dataEmissao, c.data_vencimento, c.valor_original, c.valor_original
+                ]);
+                
+                this.sqliteDb.run(`UPDATE contas_a_receber_locais SET sincronizado = 1 WHERE id = ?`, [c.id]);
+                logs.push(`[SUCESSO] Parcela ${ordemParcela}/${totalParcelasVenda} do Título ID ${c.id.substring(0,8)}... espelhada na nuvem.`);
             }
         }
 
