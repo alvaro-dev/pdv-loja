@@ -520,12 +520,12 @@
         
         // 1. Inicialização, Identificação da Máquina e Login Automático Totalmente Blindado
         window.addEventListener('DOMContentLoaded', async () => {
-            console.log("🖥️ [BOOT-FRONT] Iniciando carregamento do DOM...");
+            console.log("[BOOT-FRONT] Iniciando carregamento do DOM...");
             let caixaIdDaMaquina = null;
             
             try {
                 caixaIdDaMaquina = await ipcRenderer.invoke('obter-id-maquina');
-                console.log("🖥️ [BOOT-FRONT] ID da máquina recuperado:", caixaIdDaMaquina);
+                console.log("[BOOT-FRONT] ID da máquina recuperado:", caixaIdDaMaquina);
                 
                 if (!caixaIdDaMaquina) {
                     exibirErroTerminalNaoConfigurado();
@@ -541,7 +541,7 @@
             try {
                 const statusRedeBanco = await ipcRenderer.invoke('verificar-status-rede-banco');
                 bancoEstaOnline = !!(statusRedeBanco && statusRedeBanco.isOnline);
-                console.log("📡 [BOOT-FRONT] Estado inicial do Postgres central:", bancoEstaOnline ? "ONLINE" : "OFFLINE");
+                console.log("[BOOT-FRONT] Estado inicial do Postgres central:", bancoEstaOnline ? "ONLINE" : "OFFLINE");
             } catch (err) {
                 console.error("Erro ao checar status de rede do banco:", err);
             }
@@ -558,12 +558,12 @@
                 }
                                 
                 // 🤖 PROCESSAMENTO DO LOGIN AUTOMÁTICO (SE HOUVER)
-                console.log("📖 [BOOT-FRONT] Buscando lembrete de login no config.json...");
+                console.log("[BOOT-FRONT] Buscando lembrete de login no config.json...");
                 const loginAuto = await ipcRenderer.invoke('obter-lembrete-login');
-                console.log("📖 [BOOT-FRONT] Retorno do obter-lembrete-login:", loginAuto);
+                console.log("[BOOT-FRONT] Retorno do obter-lembrete-login:", loginAuto);
                 
                 if (loginAuto && loginAuto.status === 'sucesso') {
-                    console.log(`🚀 [BOOT-FRONT] Credenciais encontradas para o usuário "${loginAuto.usuario}". Disparando bypass...`);
+                    console.log(`[BOOT-FRONT] Credenciais encontradas para o usuário "${loginAuto.usuario}". Disparando bypass...`);
                     
                     if (document.getElementById('loginUsuario')) document.getElementById('loginUsuario').value = loginAuto.usuario;
                     if (document.getElementById('lembrarSenha')) document.getElementById('lembrarSenha').checked = true;
@@ -575,7 +575,7 @@
                         caixaId: caixaIdDaMaquina 
                     });
 
-                    console.log("🔑 [BOOT-FRONT] Resposta do tentar-login automático:", respostaAuto);
+                    console.log("[BOOT-FRONT] Resposta do tentar-login automático:", respostaAuto);
 
                     if (respostaAuto && respostaAuto.status === 'sucesso') {
                         window.operadorLogado = respostaAuto.operador;
@@ -614,15 +614,15 @@
                             }
                         }
                     } else {
-                        console.log("⚠️ [BOOT-FRONT] Falha na validação do login automático. Exibindo tela limpa.");
+                        console.log("[BOOT-FRONT] Falha na validação do login automático. Exibindo tela limpa.");
                         resgatarLoginManual();
                     }
                 } else {
-                    console.log("ℹ️ [BOOT-FRONT] Sem login automático agendado. Aguardando operador.");
+                    console.log("[BOOT-FRONT] Sem login automático agendado. Aguardando operador.");
                     resgatarLoginManual();
                 }
             } catch (err) {
-                console.error("❌ [BOOT-FRONT] Erro crítico no fluxo de renderização:", err.message);
+                console.error("[BOOT-FRONT] Erro crítico no fluxo de renderização:", err.message);
             }
         });
 

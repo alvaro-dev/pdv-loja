@@ -50,28 +50,28 @@ class DatabaseManager {
         const senhaStr = String(senha || '').trim();
         const caixaIdStr = caixaId ? String(caixaId).trim() : null;
         
-        console.log(`\n💾 [DB-LOGIN] Entrando na verificação do banco...`);
-        console.log(`👉 Recebido -> Usuário: "${usuarioStr}" | Senha original: "${senhaStr}"`);
+        console.log(`\n[DB-LOGIN] Entrando na verificação do banco...`);
+        //console.log(`Recebido -> Usuário: "${usuarioStr}" | Senha original: "${senhaStr}"`);
 
         // 🔒 Verifica se já é o hash de 64 caracteres ou texto puro
         const senhaCriptografada = (senhaStr.length === 64) 
             ? senhaStr 
             : this.gerarHashSenha(senhaStr);
         
-        console.log(`🔒 [DB-LOGIN] Tratamento final da senha -> Hash SHA-256 gerado/mantido: "${senhaCriptografada}"`);
+        //console.log(`[DB-LOGIN] Tratamento final da senha -> Hash SHA-256 gerado/mantido: "${senhaCriptografada}"`);
         
         let operador = null;
 
         // 1. SE ESTIVER ONLINE, TENTA VALIDAR NO POSTGRESQL
         if (this.isOnline) {
             try {
-                console.log(`📡 [DB-LOGIN] Buscando usuário no PostgreSQL externo...`);
+                console.log(`[DB-LOGIN] Buscando usuário no PostgreSQL externo...`);
                 const query = "SELECT id, usuario, nome, role, bloqueado, trocar_senha_prox_login FROM usuarios WHERE usuario = $1 AND senha = $2 AND usuario_pdv = 'S' AND deletado = false";
                 const resultado = await this.pgClient.query(query, [usuarioStr, senhaCriptografada]);
                 
                 if (resultado.rows.length > 0) {
                     operador = resultado.rows[0];
-                    console.log(`📡 [DB-LOGIN] Localizado no Postgres!`);
+                    console.log(`[DB-LOGIN] Localizado no Postgres!`);
                     
                     // Sincroniza na base local
                     this.sqliteDb.run(
@@ -81,7 +81,7 @@ class DatabaseManager {
                         [operador.id, operador.usuario, operador.nome, senhaCriptografada, operador.role, operador.trocar_senha_prox_login, operador.nome, senhaCriptografada, operador.role, operador.trocar_senha_prox_login]
                     );
                 } else {
-                    console.log(`⚠️ [DB-LOGIN] Combinação usuário/senha não encontrada no Postgres.`);
+                    console.log(`[DB-LOGIN] Combinação usuário/senha não encontrada no Postgres.`);
                 }
             } catch (err) {
                 console.log("Erro no login do Postgres, tentando SQLite...", err);
@@ -106,7 +106,7 @@ class DatabaseManager {
         // 🌟 EXCEÇÃO MASTER ANTECIPADA: Admins pulam qualquer trava de turno!
         // =====================================================================
         if (operador.role === 'admin' || operador.usuario === 'admin') {
-            console.log(`🔓 [LOGIN] Administrador "${operador.nome}" autenticado com sucesso.`);
+            //console.logconsole.log(`[LOGIN] Administrador "${operador.nome}" autenticado com sucesso.`);
             return operador;
         }
 
@@ -196,7 +196,7 @@ class DatabaseManager {
         });
 
         if (caixaLocal && caixaLocal.empresa_id && caixaLocal.filial_id) {
-            console.log("💾 [LOCAL] IDs de Empresa e Filial carregados com sucesso do SQLite.");
+            console.log("[LOCAL] IDs de Empresa e Filial carregados com sucesso do SQLite.");
             
             this.tenantEmpresaId = caixaLocal.empresa_id;
             this.tenantFilialId = caixaLocal.filial_id;
@@ -232,7 +232,7 @@ class DatabaseManager {
                         );
                     });
                     
-                    console.log("🔌 [POSTGRES] Dados de governança baixados e salvos no SQLite Local.");
+                    console.log("[POSTGRES] Dados de governança baixados e salvos no SQLite Local.");
                     return {
                         id: caixa.id,
                         descricao: caixa.descricao,
@@ -264,8 +264,8 @@ class DatabaseManager {
         if (!configBanco || !configBanco.host || !configBanco.database || !configBanco.user || !configBanco.password) {
             this.isOnline = false; //
             console.log("==========================================================================");
-            console.error("🔴 ERRO CONEXÃO POSTGRESQL: Parâmetros inválidos ou não existem no config.json!");
-            console.log("👉 Conectando em modo OFFLINE de contingência (Apenas SQLite Local Ativo).");
+            console.error("ERRO CONEXÃO POSTGRESQL: Parâmetros inválidos ou não existem no config.json!");
+            console.log("Conectando em modo OFFLINE de contingência (Apenas SQLite Local Ativo).");
             console.log("==========================================================================");
             return; // Aborta a tentativa de conexão com o Postgres imediatamente
         }
@@ -283,7 +283,7 @@ class DatabaseManager {
 
             await this.pgClient.connect();
             this.isOnline = true;
-            console.log("🔌 [DATABASE] Conectado ao PostgreSQL externo com sucesso!");
+            console.log("[DATABASE] Conectado ao PostgreSQL externo com sucesso!");
 
             // 🌟 ADICIONADO: Carrega todas as regras de escopo na inicialização do sistema
             this.escoposCache = {};
@@ -292,13 +292,13 @@ class DatabaseManager {
                 resEscopos.rows.forEach(row => {
                     this.escoposCache[row.tabela_nome.toLowerCase()] = String(row.escopo).toUpperCase();
                 });
-                console.log("📦 [DATABASE] Cache de regras de escopo carregado com sucesso:", this.escoposCache);
+                console.log("[DATABASE] Cache de regras de escopo carregado com sucesso:", this.escoposCache);
             } catch (errEscopo) {
-                console.error("⚠️ Falha ao carregar tabela de escopos, usando padrões EXCLUSIVO:", errEscopo.message);
+                console.error("Falha ao carregar tabela de escopos, usando padrões EXCLUSIVO:", errEscopo.message);
             }
         } catch (err) {
             this.isOnline = false; //
-            console.log(`⚠️ [DATABASE] Servidor Postgres inacessível (${err.message}). Modo OFFLINE ativo.`); //
+            console.log(`[DATABASE] Servidor Postgres inacessível (${err.message}). Modo OFFLINE ativo.`); //
         }
     }
 
@@ -462,7 +462,7 @@ class DatabaseManager {
             const operadoresNovos = resultado.rows;
 
             if (operadoresNovos.length === 0) {
-                console.log("[SYNC-INCREMENTAL] 🏆 Base de operadores locais já está 100% atualizada.");
+                console.log("[SYNC-INCREMENTAL] Base de operadores locais já está 100% atualizada.");
                 return { status: 'sucesso', total: 0 };
             }
 
@@ -556,7 +556,7 @@ class DatabaseManager {
             const clientesNovos = resultado.rows;
 
             if (clientesNovos.length === 0) {
-                console.log("[SYNC-CLIENTES-INCREMENTAL] 🏆 Base de clientes locais já está 100% atualizada.");
+                console.log("[SYNC-CLIENTES-INCREMENTAL] Base de clientes locais já está 100% atualizada.");
                 return { status: 'sucesso', total: 0 };
             }
 
@@ -621,7 +621,7 @@ class DatabaseManager {
                 return res.rows.length > 0;
             } catch (err) {
                 // 🌟 REVELA O ERRO SE O CAIXA_ABERTO FALHAR
-                console.error("🔴 [FALHA SILENCIOSA - VERIFICAR CAIXA ABERTO]:", err.message);
+                console.error("[FALHA SILENCIOSA - VERIFICAR CAIXA ABERTO]:", err.message);
                 this.isOnline = false;
             }
         }
@@ -1029,7 +1029,7 @@ class DatabaseManager {
                 if (res.rows.length > 0) movimiento = res.rows[0];
             } catch (err) { 
                 // 🌟 REVELA O ERRO SE A BUSCA DE MOVIMENTO FALHAR
-                console.error("🔴 [FALHA SILENCIOSA - RESUMO TURNO (MOVIMENTO)]:", err.message);
+                console.error("[FALHA SILENCIOSA - RESUMO TURNO (MOVIMENTO)]:", err.message);
                 this.isOnline = false; 
             }
         }
@@ -1058,7 +1058,7 @@ class DatabaseManager {
                 vendas = res.rows;
             } catch (err) { 
                 // 🌟 REVELA O ERRO SE A LISTAGEM DE VENDAS DO RESUMO FALHAR
-                console.error("🔴 [FALHA SILENCIOSA - RESUMO TURNO (VENDAS)]:", err.message);
+                console.error("[FALHA SILENCIOSA - RESUMO TURNO (VENDAS)]:", err.message);
                 this.isOnline = false; 
             }
         }
@@ -1197,7 +1197,7 @@ class DatabaseManager {
                 const res = await this.pgClient.query(`SELECT data_abertura FROM movimentos_caixa WHERE caixa_id = $1::uuid AND status = 'A' AND deletado = false LIMIT 1`, [caixaId]);
                 if (res.rows.length > 0) movimiento = res.rows[0];
             } catch (err) { 
-                console.error("🔴 [ERRO CRÍTICO POSTGRES - BUSCAR ABERTURA TURNO]:", err.message);
+                console.error("[ERRO CRÍTICO POSTGRES - BUSCAR ABERTURA TURNO]:", err.message);
                 this.isOnline = false; 
             }
         }
@@ -1225,7 +1225,7 @@ class DatabaseManager {
                 const res = await this.pgClient.query(queryPostgresTurno, [caixaId, movimiento.data_abertura]);
                 return res.rows;
             } catch (err) { 
-                console.error("🔴 [ERRO CRÍTICO POSTGRES - LISTAR VENDAS TURNO]:", err.message);
+                console.error("[ERRO CRÍTICO POSTGRES - LISTAR VENDAS TURNO]:", err.message);
                 this.isOnline = false; 
             }
         }
@@ -1321,7 +1321,7 @@ class DatabaseManager {
         const dataInicioClean = extrairTimestampLocal(dataAbertura);
         const dataFimClean = extrairTimestampLocal(dataFechamento);
 
-        console.log(`📡 [POSTGRES] Buscando período estrito: Inicial: ${dataInicioClean} | Final: ${dataFimClean}`);
+        console.log(`[POSTGRES] Buscando período estrito: Inicial: ${dataInicioClean} | Final: ${dataFimClean}`);
 
         if (this.isOnline) {
             try {
@@ -1350,7 +1350,7 @@ class DatabaseManager {
                 this.isOnline = true;
                 return res.rows;
             } catch (err) {
-                console.error("🔴 ERRO NO EXTRACT PDV POSTGRES:", err.message);
+                console.error("ERRO NO EXTRACT PDV POSTGRES:", err.message);
                 throw err;
             }
         }

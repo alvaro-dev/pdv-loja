@@ -116,20 +116,20 @@ app.on('window-all-closed', () => {
 
  ipcMain.handle('tentar-login', async (event, { usuario, senha, caixaId }) => {
     try {
-        console.log(`\n🚀 [IPC-LOGIN] Tentativa de login recebida no Main -> Usuário: "${usuario}" | Tamanho da Senha: ${senha ? senha.length : 0} caracteres`);
+        console.log(`\n[IPC-LOGIN] Tentativa de login recebida no Main -> Usuário: "${usuario}" | Tamanho da Senha: ${senha ? senha.length : 0} caracteres`);
         
         const operador = await db.realizarLogin(usuario, senha, caixaId);
         
         if (!operador) {
-            console.log(`❌ [IPC-LOGIN] Rejeitado pelo banco para o usuário: "${usuario}"`);
+            console.log(`[IPC-LOGIN] Rejeitado pelo banco para o usuário: "${usuario}"`);
             return { status: 'erro', mensagem: 'Usuário ou senha incorretos.' };
         }
 
-        console.log(`✅ [IPC-LOGIN] Autenticado com sucesso! Operador: "${operador.nome}" | Privilégio: "${operador.role}"`);
+        console.log(`[IPC-LOGIN] Autenticado com sucesso! Operador: "${operador.nome}" | Privilégio: "${operador.role}"`);
         return { status: 'sucesso', operador };
 
     } catch (error) {
-        console.error("🚨 [IPC-LOGIN] Bloqueio de segurança ou exceção:", error.message);
+        console.error("[IPC-LOGIN] Bloqueio de segurança ou exceção:", error.message);
         return { status: 'erro', mensagem: error.message };
     }
 });
@@ -329,11 +329,11 @@ ipcMain.handle('obter-lembrete-login', async () => {
         if (fs.existsSync(caminhoConfig)) {
             const config = JSON.parse(fs.readFileSync(caminhoConfig, 'utf8'));
             
-            console.log("\n🔍 [CONFIG.JSON] Conteúdo bruto lido do arquivo:", config.lembrarOperador);
+            console.log("\n[CONFIG.JSON] Conteúdo bruto lido do arquivo:", config.lembrarOperador);
 
             if (config && config.lembrarOperador) {
                 const senhaDesofuscada = desofuscarSenha(config.lembrarOperador.senha);
-                console.log(`🔑 [CONFIG.JSON] Usuário localizado: "${config.lembrarOperador.usuario}" | Hash extraído: "${senhaDesofuscada}"`);
+                console.log(`[CONFIG.JSON] Usuário localizado: "${config.lembrarOperador.usuario}" | Hash extraído: "${senhaDesofuscada}"`);
                 
                 return { 
                     status: 'sucesso', 
@@ -342,10 +342,10 @@ ipcMain.handle('obter-lembrete-login', async () => {
                 };
             }
         }
-        console.log("ℹ️ [CONFIG.JSON] Nenhuma credencial de login automático foi localizada.");
+        console.log("[CONFIG.JSON] Nenhuma credencial de login automático foi localizada.");
         return { status: 'vazio' };
     } catch (err) {
-        console.error("❌ [CONFIG.JSON] Erro ao ler lembrete de login:", err);
+        console.error("[CONFIG.JSON] Erro ao ler lembrete de login:", err);
         return { status: 'erro' };
     }
 });
