@@ -168,6 +168,31 @@
             white-space: nowrap !important;
             padding: 10px 12px !important; /* Melhora o respiro visual */
         }
+        /* 🌟 NOVO: Alarga o container especificamente na tela de histórico de turnos */
+        #telaHistorico {
+            max-width: 95% !important; /* Totalmente adaptável a qualquer tamanho de monitor */
+            width: 1200px !important;  /* Fornece a largura ideal para as 8 colunas de auditoria */
+            transition: max-width 0.2s, width 0.2s;
+            margin-top: 30px;
+        }
+
+        /* Garante que todas as tabelas internas do painel de histórico usem o novo espaço */
+        #telaHistorico table {
+            width: 100% !important;
+            margin-top: 15px;
+        }
+
+        /* Impede quebras de linha indesejadas dentro das células do histórico */
+        #telaHistorico th, #telaHistorico td {
+            white-space: nowrap !important;
+            padding: 10px 12px !important; /* Aumenta o espaçamento interno para melhorar a leitura */
+        }
+
+        /* Permite que colunas textuais mais longas quebrem linha se necessário de forma controlada */
+        #telaHistorico td:nth-child(1), #telaHistorico td:nth-child(2) {
+            white-space: normal !important;
+            min-width: 130px;
+        }
     </style>
 </head>
 <body>
@@ -280,6 +305,8 @@
     <div id="telaHistorico" class="container" style="display: none; max-width: 850px;">
         <h2>📊 Histórico de Turnos Encerrados</h2>
         
+        <div id="erroFiltroHist" class="msg-box erro" style="margin-bottom: 15px; margin-top: 0; font-size: 14px; padding: 10px;"></div>
+
         <div style="background: #f8f9fa; padding: 15px; border-radius: 6px; margin-bottom: 20px; border: 1px solid #dee2e6; display: flex; gap: 15px; align-items: flex-end; justify-content: center;">
             <div style="flex: 1; min-width: 150px; text-align: left;">
                 <label for="filtroDataInicio" style="font-size: 13px; margin-bottom: 4px;">Data Inicial:</label>
@@ -955,7 +982,7 @@
                     // Força o badge a renderizar o estado de rede inicial correto pós-abertura
                     const statusRedeAtual = await ipcRenderer.invoke('verificar-status-rede-banco');
                     atualizarBadgeRedeSuperior(!!(statusRedeAtual && statusRedeAtual.isOnline));
-                    
+
                     // Esconde a tela de abertura e libera a tela principal de movimentações
                     document.getElementById('telaAbertura').style.display = 'none';
                     document.getElementById('telaCaixa').style.display = 'block';
@@ -1681,14 +1708,62 @@
         // Função isolada responsável por fazer o Invoke passando os inputs colhidos em tela
         async function carregarDadosHistoricoFiltrado() {
             const corpoTabela = document.getElementById('tabelaHistoricoCorpo');
-            const dataInicio = document.getElementById('filtroDataInicio').value;
-            const dataFim = document.getElementById('filtroDataFim').value;
+            const campoDataInicio = document.getElementById('filtroDataInicio');
+            const campoDataFim = document.getElementById('filtroDataFim');
+            const divErroFiltro = document.getElementById('erroFiltroHist');
+
+            const dataInicio = campoDataInicio.value;
+            const dataFim = campoDataFim.value;
+
+            // Oculta o erro por padrão a cada nova tentativa de filtragem
+            divErroFiltro.style.display = 'none';
+            divErroFiltro.innerText = '';
+
+            // 🌟 VALIDAÇÃO INTEGRADA NO HTML: Se a data inicial for maior que a final, corrige e avisa
+            if (dataInicio && dataFim) {
+                if (dataInicio > dataFim) {
+                    // Ajusta automaticamente a data inicial para ficar igual à final
+                    campoDataInicio.value = dataFim;
+                    
+                    // Exibe o aviso vermelho diretamente na estrutura do card HTML
+                    divErroFiltro.innerText = "⚠️ Ajuste Automático: A data inicial não pode ser maior que a data final. O campo foi igualado ao limite final para viabilizar a busca.";
+                    divErroFiltro.style.display = 'block';
+
+                    // Agenda o sumiço automático do aviso em 8 segundos
+                    setTimeout(() => {
+                        divErroFiltro.style.display = 'none';
+                        divErroFiltro.innerText = '';
+                    }, 8000);
+                    
+                    return; // Interrompe para o operador clicar novamente com o cenário corrigido
+                }
+            }
+
+            // CORREÇÃO DE BUG: Oculta e limpa o painel de extrato detalhado do turno anterior
+            const painelDetalhe = document.getElementById('painelDetalheTurno');
+            if (painelDetalhe) {
+                painelDetalhe.style.display = 'none';
+            }
+            
+            let corpoDetalhe = document.getElementById('tabelaDetalheTurnoCorpo');
+            if (!corpoDetalhe) {
+                corpoDetalhe = document.getElementById('tabelaDetailTurnoCorpo');
+            }
+            if (corpoDetalhe) {
+                corpoDetalhe.innerHTML = '';
+            }
+            
+            dadosDetalheCompletos = [];
+            paginaAtualDet = 1;
 
             corpoTabela.innerHTML = `<tr><td colspan="8" style="padding: 15px; text-align: center; color: #666;">Buscando dados filtrados no servidor...</td></tr>`;
             
             try {
-                // Passa as datas limites escolhidas pelo operador admin para o processo Main
-                const resposta = await ipcRenderer.invoke('obter-historico-turnos', { dataInicio, dataFim });
+                // Passa as datas limites ja validadas para o processo Main
+                const resposta = await ipcRenderer.invoke('obter-historico-turnos', { 
+                    dataInicio: campoDataInicio.value, 
+                    dataFim: campoDataFim.value 
+                });
                 
                 if (resposta.status === 'offline') {
                     corpoTabela.innerHTML = `<tr><td colspan="8" style="padding: 15px; text-align: center; color: #721c24; background-color: #f8d7da;">⚠️ ${resposta.mensagem}</td></tr>`;
