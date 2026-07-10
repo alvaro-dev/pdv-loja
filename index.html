@@ -109,6 +109,16 @@
             font-weight: bold;
         }
 
+        /* Badge de conexão Offline */
+        .badge-offline {
+            background-color: #dc3545; /* Vermelho escuro */
+            color: white;
+            padding: 3px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: bold;
+        }
+
         /* Ajuste para o container não sumir embaixo do cabeçalho */
         body {
             padding-top: 80px !important; 
@@ -829,10 +839,14 @@
                         document.getElementById('navOperadorNome').innerText = window.operadorLogado.nome;
                         if (dadosCaixa.status === 'sucesso') {
                             document.getElementById('navCaixaDescricao').innerText = dadosCaixa.dados.descricao;
-                            document.getElementById('navEmpresaNome').innerText = dadosCaixa.dados.empresa_nome || "Alfa Matriz"; 
-                            document.getElementById('navFilialNome').innerText = dadosCaixa.dados.filial_nome || "Moda Minas Conf.";
+                            document.getElementById('navEmpresaNome').innerText = dadosCaixa.dados.empresa_nome; 
+                            document.getElementById('navFilialNome').innerText = dadosCaixa.dados.filial_nome;
                         }
-
+                        
+                        // 🌟 ADICIONADO: Força o badge a renderizar o estado de rede inicial correto pós-login
+                        const statusRedeAtual = await ipcRenderer.invoke('verificar-status-rede-banco');
+                        atualizarBadgeRedeSuperior(!!(statusRedeAtual && statusRedeAtual.isOnline));
+                        
                         await atualizarTabelaLancamentosJanela();
                         document.getElementById('origem').focus();
                     } else {
@@ -2046,6 +2060,26 @@
             // Dispara o mesmo canal IPC que já configuramos no main.js
             ipcRenderer.send('imprimir-comprovante-crediario', vendaId);
         };
+
+        // 🌟 FUNÇÃO DE ATUALIZAÇÃO DO BADGE DE REDE SUPERIOR
+        function atualizarBadgeRedeSuperior(isOnline) {
+            const badgeRede = document.getElementById('badgeRede');
+            if (!badgeRede) return;
+
+            if (isOnline) {
+                badgeRede.className = 'badge-online';
+                badgeRede.innerText = 'ONLINE';
+            } else {
+                badgeRede.className = 'badge-offline';
+                badgeRede.innerText = 'OFFLINE';
+            }
+        }
+
+        // 🌟 OUVINTE DO EVENTO IPC: Escuta atualizações automáticas vindas do processo principal
+        ipcRenderer.on('notificar-status-rede', (event, status) => {
+            console.log("[REDE] Alteracao de estado recebida no front-end. Online:", status.isOnline);
+            atualizarBadgeRedeSuperior(status.isOnline);
+        });
     </script>
 </body>
 </html>

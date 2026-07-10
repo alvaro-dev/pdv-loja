@@ -1109,7 +1109,7 @@ class DatabaseManager {
                     
                     // Aplicado cast explicito nos campos UUID e TIMESTAMP para adequacao estrita
                     const queryPG = `
-                        INSERT INTO vendas (id, caixa_id, operador_id, cliente_id, forma_pagamento,起源, total, descricao_movimento, data_venda, bandeira, parcelas, empresa_id, filial_id) 
+                        INSERT INTO vendas (id, caixa_id, operador_id, cliente_id, forma_pagamento, origem, total, descricao_movimento, data_venda, bandeira, parcelas, empresa_id, filial_id) 
                         VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5, $6, $7, $8, $9::timestamp, $10, $11, $12::uuid, $13::uuid)
                     `;
                     await this.pgClient.query(queryPG, [idVenda, caixaId, operadorId, clienteId, formaPagamento, origem, total, descricaoMovimento, dataAtual, bandeira, parcelas, empIdGlobal, filialPgValor]);
@@ -1602,7 +1602,7 @@ class DatabaseManager {
     async listarVendasTurnoAtual(caixaId) {
         try {
             console.log("[BANCO] Iniciando listagem de vendas do turno atual...");
-            let movimiento = null;
+            let movimento = null;
 
             if (this.isOnline) {
                 try {
@@ -1618,7 +1618,7 @@ class DatabaseManager {
                 }
             }
 
-            if (!movimiento) {
+            if (!movimento) {
                 try {
                     console.log("[BANCO] Buscando data de abertura do turno ativo no SQLite local...");
                     movimento = await new Promise((resolve, reject) => {
@@ -1632,7 +1632,7 @@ class DatabaseManager {
                 }
             }
 
-            if (!movimiento) {
+            if (!movimento) {
                 console.log("[BANCO] Nenhuma venda listada: Turno aberto nao localizado para este caixa.");
                 return [];
             }
@@ -1652,7 +1652,7 @@ class DatabaseManager {
                         AND v.deletado = false 
                         ORDER BY v.data_venda DESC
                     `;
-                    const res = await this.pgClient.query(queryPostgresTurno, [caixaId, movimiento.data_abertura]);
+                    const res = await this.pgClient.query(queryPostgresTurno, [caixaId, movimento.data_abertura]);
                     return res.rows;
                 } catch (err) { 
                     console.error("[ERRO CRITICO POSTGRES - LISTAR VENDAS TURNO]:", err.message);
@@ -1670,7 +1670,7 @@ class DatabaseManager {
                     LEFT JOIN clientes_locais c ON c.id = v.cliente_id 
                     WHERE v.caixa_id = ? AND v.data_venda >= ? AND v.deletado = 0 
                     ORDER BY v.data_venda DESC
-                `, [caixaId, movimiento.data_abertura], (err, rows) => {
+                `, [caixaId, movimento.data_abertura], (err, rows) => {
                     if (err) {
                         console.error("[ERRO - listarVendasTurnoAtual (Listar Vendas SQLite)]:", err.message);
                         resolve([]);

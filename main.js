@@ -53,7 +53,7 @@ function createWindow() {
     // mainWindow.webContents.openDevTools();
 }
 
-// Função para disparar a sincronização a cada 10 minutos
+// Função para disparar a sincronização e notificar o front-end sobre o estado da rede
 function iniciarTimerSincronizacao() {
     console.log("[SISTEMA] Timer de sincronização em segundo plano ativado (Intervalo: 10 minutos).");
     
@@ -61,6 +61,11 @@ function iniciarTimerSincronizacao() {
         try {
             // 1. Verifica se a rede com o Ubuntu/Postgres está ativa
             await db.verificarConexaoPostgres(); 
+            
+            // 🌟 NOVO: Notifica o front-end em tempo real sobre a flutuação da rede
+            if (mainWindow && mainWindow.webContents) {
+                mainWindow.webContents.send('notificar-status-rede', { isOnline: db.isOnline });
+            }
             
             // 2. Se estiver online, executa a limpeza de pendências
             if (db.isOnline) {
@@ -160,6 +165,11 @@ ipcMain.handle('efetuar-venda', async (event, dadosVenda) => {
             parcelas,
             clienteId // 🌟 PASSA PARA O MÉTODO DO BANCO
         );
+
+        // 🌟 NOVO: Atualiza a barra superior imediatamente caso a venda mude o estado para offline
+        if (mainWindow && mainWindow.webContents) {
+            mainWindow.webContents.send('notificar-status-rede', { isOnline: db.isOnline });
+        }
         
         return resultado;
     } catch (error) {
