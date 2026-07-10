@@ -19,10 +19,35 @@
             border-radius: 8px; 
             box-shadow: 0 4px 10px rgba(0,0,0,0.08); 
             width: 100%; 
-            max-width: 550px; 
+            max-width: 550px; /* Mantém o padrão compacto para telas de login/abertura */
+            box-sizing: border-box;
         }
         .login-box { max-width: 400px; margin-top: 50px; }
         
+        /* 🌟 NOVO: Alarga especificamente o container quando a tela do caixa estiver ativa */
+        #telaCaixa {
+            max-width: 95% !important; /* Permite que o PDV se espalhe melhor na tela maximizada */
+            width: 1000px !important;   /* Define uma largura ideal para acomodar todas as colunas do grid */
+            transition: max-width 0.2s, width 0.2s;
+        }
+
+        /* 🌟 OTIMIZAÇÃO: Ajusta as células da tabela para não quebrarem linha de forma feia */
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 20px;
+        }
+        th, td {
+            white-space: nowrap; /* Impede que termos como 'C. Crédito' quebrem em duas linhas */
+            padding: 8px 10px !important;
+        }
+        /* Permite que a coluna da descrição e do cliente usem o espaço restante flexível */
+        th:nth-child(3), td:nth-child(3),
+        th:nth-child(6), td:nth-child(6) {
+            white-space: normal !important; 
+            min-width: 150px;
+        }
+
         h1, h2, h3 { text-align: center; color: #333; margin-bottom: 25px; }
         .form-group { margin-bottom: 22px; }
         label { display: block; margin-bottom: 8px; font-weight: bold; color: #555; font-size: 15px; }
@@ -122,6 +147,26 @@
         /* Ajuste para o container não sumir embaixo do cabeçalho */
         body {
             padding-top: 80px !important; 
+        }
+
+        /* 🌟 NOVO: Alarga o container especificamente na tela de fechamento de caixa */
+        #telaFechamento {
+            max-width: 95% !important; /* Adaptável a telas menores */
+            width: 650px !important;   /* Largura ideal para acomodar a tabela e os cards sem espremer */
+            transition: max-width 0.2s, width 0.2s;
+            margin-top: 30px;
+        }
+
+        /* Garante que a tabela de fechamento ocupe 100% do novo espaço disponível */
+        #telaFechamento table {
+            width: 100% !important;
+            margin-top: 15px;
+        }
+
+        /* Remove quebras de linha feias nas células de valores do fechamento */
+        #telaFechamento th, #telaFechamento td {
+            white-space: nowrap !important;
+            padding: 10px 12px !important; /* Melhora o respiro visual */
         }
     </style>
 </head>
@@ -846,7 +891,7 @@
                         // 🌟 ADICIONADO: Força o badge a renderizar o estado de rede inicial correto pós-login
                         const statusRedeAtual = await ipcRenderer.invoke('verificar-status-rede-banco');
                         atualizarBadgeRedeSuperior(!!(statusRedeAtual && statusRedeAtual.isOnline));
-                        
+
                         await atualizarTabelaLancamentosJanela();
                         document.getElementById('origem').focus();
                     } else {
@@ -894,6 +939,23 @@
                 const resultado = await ipcRenderer.invoke('abrir-caixa', { caixaId, operadorId, valorAbertura });
                 
                 if (resultado.status === 'sucesso') {
+                    // 🌟 NOVO: Busca as configurações amigáveis do caixa para preencher a Navbar após a abertura bem-sucedida
+                    const dadosCaixa = await ipcRenderer.invoke('carregar-caixa', caixaId);
+                    
+                    // Exibe a barra superior corporativa e limpa os placeholders
+                    document.getElementById('navbarStatus').style.display = 'flex';
+                    document.getElementById('navOperadorNome').innerText = window.operadorLogado.nome;
+                    
+                    if (dadosCaixa.status === 'sucesso') {
+                        document.getElementById('navCaixaDescricao').innerText = dadosCaixa.dados.descricao;
+                        document.getElementById('navEmpresaNome').innerText = dadosCaixa.dados.empresa_nome || "Grupo Alfa Varejo"; 
+                        document.getElementById('navFilialNome').innerText = dadosCaixa.dados.filial_nome || "Alfa Matriz";
+                    }
+
+                    // Força o badge a renderizar o estado de rede inicial correto pós-abertura
+                    const statusRedeAtual = await ipcRenderer.invoke('verificar-status-rede-banco');
+                    atualizarBadgeRedeSuperior(!!(statusRedeAtual && statusRedeAtual.isOnline));
+                    
                     // Esconde a tela de abertura e libera a tela principal de movimentações
                     document.getElementById('telaAbertura').style.display = 'none';
                     document.getElementById('telaCaixa').style.display = 'block';
@@ -1160,15 +1222,10 @@
                 statusDiv.style.display = 'block';
                 statusDiv.className = 'msg-box erro';
                 statusDiv.innerText = `⚠️ ${resumo.mensagem}`;
-
-                setTimeout(() => {
-                    statusDiv.style.display = 'none';
-                    statusDiv.innerText = '';
-                }, 5000);
+                setTimeout(() => { statusDiv.style.display = 'none'; }, 5000);
                 return;
             }
 
-            // Separa os cálculos de Dinheiro e Eletrônico para os cards superiores
             const fundoInicial = resumo.fundoInicial;
             let dinheiroEntradas = 0;
             let dinheiroSaidas = 0;
@@ -1179,37 +1236,29 @@
                     dinheiroEntradas = f.entradas;
                     dinheiroSaidas = f.saidas;
                 } else {
+                    // 🌟 Vendas em Cartão, Pix e agora o CREDIÁRIO alimentam o Faturamento Eletrônico/Auditoria
                     totalEletronico += f.entradas;
                 }
             });
 
             const dinheiroEsperado = fundoInicial + dinheiroEntradas - dinheiroSaidas;
 
-            // Preenche os dados gerais nos cards superiores
             document.getElementById('fechamentoMovimentoId').value = resumo.movimentoId;
             document.getElementById('saldoBrutoOculto').value = resumo.saldoFinal; 
             document.getElementById('resumoFundo').innerText = `R$ ${fundoInicial.toFixed(2)}`;
             document.getElementById('resumoDinheiroEsperado').innerText = `R$ ${dinheiroEsperado.toFixed(2)}`;
             document.getElementById('resumoEletronicoEsperado').innerText = `R$ ${totalEletronico.toFixed(2)}`;
 
-            // Reseta o input de conferência física do operador
             document.getElementById('valorContadoGaveta').value = "0.00";
-            const divResultado = document.getElementById('resultadoConferencia');
-            divResultado.style.display = 'none';
+            document.getElementById('resultadoConferencia').style.display = 'none';
 
-            // Limpa e reconstrói as linhas da tabela de detalhamento
             const corpoTabela = document.getElementById('tabelaDetalheCorpo');
             corpoTabela.innerHTML = '';
 
             resumo.detalheFormas.forEach(forma => {
-                // Só adiciona na tabela se houve alguma movimentação nela
                 if (forma.entradas > 0 || forma.saidas > 0) {
                     const saldoLiquido = forma.entradas - forma.saidas;
-                    
-                    // 🌟 REGRA VISUAL: O vermelho só ativa se HOUVER saída real (> 0). Se for 0, fica cinza neutro.
-                    const estiloSaida = forma.saidas > 0 
-                        ? 'color: red; font-weight: bold;' 
-                        : 'color: #888; font-weight: normal;';
+                    const estiloSaida = forma.saidas > 0 ? 'color: red; font-weight: bold;' : 'color: #888;';
                     
                     const linha = document.createElement('tr');
                     linha.innerHTML = `
@@ -1222,12 +1271,10 @@
                 }
             });
 
-            // Se nenhuma movimentação foi feita no turno inteiro
             if (corpoTabela.innerHTML === '') {
                 corpoTabela.innerHTML = `<tr><td colspan="4" style="padding: 10px; text-align: center; color: #888;">Nenhuma movimentação neste turno.</td></tr>`;
             }
 
-            // Alterna a tela para o gerenciador de fechamento
             document.getElementById('telaCaixa').style.display = 'none';
             document.getElementById('telaFechamento').style.display = 'block';
         });
@@ -1349,14 +1396,33 @@
         }
 
         // 🎨 FUNÇÃO RESPONSÁVEL POR FATIAR E DESENHAR OS 50 LANÇAMENTOS COM NOME DO CLIENTE E REIMPRESSÃO CR
+        // 🎨 FUNÇÃO RESPONSÁVEL POR FATIAR E DESENHAR OS LANÇAMENTOS COM NOME DO CLIENTE E REIMPRESSÃO CR
         function renderizarTabelaLancamentosPrincipal() {
             const corpoTabela = document.getElementById('tabelaLancamentosCorpo');
             if (!corpoTabela) return;
 
+            // 🌟 Injeta dinamicamente a coluna Cliente no cabeçalho do grid
+            const containerTabela = corpoTabela.closest('table');
+            if (containerTabela) {
+                const cabecalho = containerTabela.querySelector('thead tr');
+                if (cabecalho) {
+                    cabecalho.innerHTML = `
+                        <th style="padding: 6px; border: 1px solid #dee2e6;">Origem</th>
+                        <th style="padding: 6px; border: 1px solid #dee2e6;">Forma</th>
+                        <th style="padding: 6px; border: 1px solid #dee2e6;">Cliente</th>
+                        <th style="padding: 6px; border: 1px solid #dee2e6;">Bandeira</th>
+                        <th style="padding: 6px; border: 1px solid #dee2e6;">Parcelas</th>
+                        <th style="padding: 6px; border: 1px solid #dee2e6;">Descrição</th>
+                        <th style="padding: 6px; border: 1px solid #dee2e6;">Valor</th>
+                        <th style="padding: 6px; border: 1px solid #dee2e6; text-align: center;">Ação</th>
+                    `;
+                }
+            }
+
             corpoTabela.innerHTML = '';
 
             if (!dadosLancamentosCompletos || dadosLancamentosCompletos.length === 0) {
-                corpoTabela.innerHTML = `<tr><td colspan="7" style="padding: 15px; text-align: center; color: #888; font-style: italic;">Nenhum lançamento registrado neste turno.</td></tr>`;
+                corpoTabela.innerHTML = `<tr><td colspan="8" style="padding: 15px; text-align: center; color: #888; font-style: italic;">Nenhum lançamento registrado neste turno.</td></tr>`;
                 document.getElementById('txtPaginaLanc').innerText = "Página 1 de 1";
                 return;
             }
@@ -1372,7 +1438,6 @@
             document.getElementById('txtPaginaLanc').innerText = `Página ${paginaAtualLanc} de ${totalPaginas}`;
 
             itensPagina.forEach(v => {
-                const hora = new Date(v.data_venda || v.data_movimento).toLocaleTimeString('pt-BR');
                 const tipo = (v.origem === 'E' || v.tipo_movimento === 'E') 
                     ? '<span style="color:green;font-weight:bold;">📥 Entrada</span>' 
                     : '<span style="color:red;font-weight:bold;">📤 Saída</span>';
@@ -1397,20 +1462,23 @@
                     estiloColunaCartao = 'color: #2b2b2b; font-style: normal;';
                 }
 
-                // 🌟 EVOLUÇÃO: Se for crediário (CR), realça o nome do cliente nominal anexado ao documento
+                // Resgata o nome do cliente obtido no JOIN do banco de dados
                 const clienteNomeResolvido = v.cliente_nome || 'CONSUMIDOR FINAL';
-                const descricaoExibicao = v.forma_pagamento === 'CR'
-                    ? `<b style="color: #0056b3;">[${clienteNomeResolvido}]</b><br><span style="font-size: 12px; color: #666;">${v.descricao_movimento || v.descricao || 'Venda de Produtos'}</span>`
-                    : `${v.descricao_movimento || v.descricao || 'Venda de Produtos'}`;
+                
+                // Formatação diferenciada para o nome do cliente se a venda for no Crediário
+                const clienteCelulaExibicao = v.forma_pagamento === 'CR'
+                    ? `<b style="color: #0056b3;">${clienteNomeResolvido}</b>`
+                    : `<span style="color: #555;">${clienteNomeResolvido}</span>`;
 
-                // 🌟 EVOLUÇÃO: Constrói os botões da célula de ação em bloco dinâmico
+                const descricaoExibicao = v.descricao_movimento || v.descricao || 'Venda de Produtos';
+
+                // Mantido os emojis e ícones nos botões de ação abaixo
                 let botoesAcao = `
                     <button onclick="dispararExclusao('${v.id}')" style="margin-top: 0; padding: 4px 8px; font-size: 12px; background-color: #dc3545; width: auto; font-weight: normal; border: none; color: white; border-radius: 4px; cursor: pointer;">
                         🗑️ Excluir
                     </button>
                 `;
 
-                // Se for Crediário, acopla o botão verde com o ícone de impressora térmico ao lado do botão excluir
                 if (v.forma_pagamento === 'CR') {
                     botoesAcao += `
                         <button onclick="reimprimirCrediario('${v.id}')" title="Reimprimir Comprovante / Promissória" style="margin-top: 0; padding: 4px 8px; font-size: 12px; background-color: #28a745; width: auto; font-weight: normal; margin-left: 6px; border: none; color: white; border-radius: 4px; cursor: pointer;">
@@ -1423,13 +1491,11 @@
                 linha.innerHTML = `
                     <td style="padding: 8px; border: 1px solid #dee2e6;">${tipo}</td>
                     <td style="padding: 8px; border: 1px solid #dee2e6; font-weight: bold;">${formaTexto}</td>
-                    
+                    <td style="padding: 8px; border: 1px solid #dee2e6; font-size: 13px;">${clienteCelulaExibicao}</td>
                     <td style="padding: 8px; border: 1px solid #dee2e6; font-size: 13px; ${estiloColunaCartao}">${bandeiraTexto}</td>
                     <td style="padding: 8px; border: 1px solid #dee2e6; font-size: 13px; text-align: center; ${estiloColunaCartao}">${parcelaTexto}</td>
-                    
                     <td style="padding: 8px; border: 1px solid #dee2e6;">${descricaoExibicao}</td>
                     <td style="padding: 8px; border: 1px solid #dee2e6; ${estiloValor}">R$ ${parseFloat(v.total || v.valor || 0).toFixed(2)}</td>
-                    
                     <td style="padding: 8px; border: 1px solid #dee2e6; text-align: center;">
                         <div style="display: flex; align-items: center; justify-content: center;">
                             ${botoesAcao}

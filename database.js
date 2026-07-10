@@ -1423,11 +1423,12 @@ class DatabaseManager {
             let totalSaidas = 0;
 
             const detalheFormas = {
-                DN: { nome: 'Dinheiro', entradas: 0, saidas: 0 },
-                CC: { nome: 'Cartao de Credito', entradas: 0, saidas: 0 },
-                CD: { nome: 'Cartao de Debito', entradas: 0, saidas: 0 },
-                PX: { nome: 'Pix', entradas: 0, saidas: 0 }
-            };
+            DN: { nome: 'Dinheiro', entradas: 0, saidas: 0 },
+            CC: { nome: 'Cartao de Credito', entradas: 0, saidas: 0 },
+            CD: { nome: 'Cartao de Debito', entradas: 0, saidas: 0 },
+            PX: { nome: 'Pix', entradas: 0, saidas: 0 },
+            CR: { nome: 'Crediario', entradas: 0, saidas: 0 } // 🌟 Mapeado de forma limpa
+        };
 
             try {
                 vendas.forEach(v => {
