@@ -298,27 +298,38 @@ ipcMain.handle('obter-vendas-periodo', async (event, { caixaId, dataAbertura, da
     }
 });
 
-// 💾 Canal para salvar as credenciais salvas no config.json do Windows
-// 💾 Canal Corrigido: Trata o Hash no processo principal (Main) antes de salvar no config.json
-// 💾 Canal Corrigido: Trata o Hash e salva estritamente no nó 'lembrarOperador'
+// 🔒 IMPORTAÇÃO DO MÓDULO DE SEGURANÇA NATIVO DO ELECTRON
+const { safeStorage } = require('electron');
+
+// 💾 Canal Corrigido: Criptografa a senha usando chaves do Sistema Operacional (safeStorage)
 ipcMain.handle('salvar-lembrete-login', async (event, { usuario, senha, ativo }) => {
     try {
-        const crypto = require('crypto'); // Garante o escopo do módulo
+        const crypto = require('crypto');
         let config = {};
         if (fs.existsSync(caminhoConfig)) {
             config = JSON.parse(fs.readFileSync(caminhoConfig, 'utf8'));
         }
         
         if (ativo && usuario && senha) {
-            // Gera o Hash SHA-256 síncrono para garantir estabilidade pura
+            // 1. Gera o Hash SHA-256 padrão da senha digitada
             const hashFinal = (senha.length === 64) 
                 ? senha 
                 : crypto.createHash('sha256').update(senha).digest('hex');
             
-            // 🌟 CORREÇÃO: Salva exatamente na propriedade esperada pelo config.json
+            // 2. Verifica se a criptografia do safeStorage está disponível no Sistema Operacional
+            if (!safeStorage.isEncryptionAvailable()) {
+                throw new Error("A criptografia nativa do sistema operacional nao esta disponivel neste ambiente.");
+            }
+
+            // 3. Criptografa o Hash SHA-256 gerando um Buffer binário seguro
+            const bufferCriptografado = safeStorage.encryptString(hashFinal);
+            
+            // 4. Converte o Buffer em uma string Hexadecimal pura para persistência segura no JSON
+            const senhaProtegidaHex = bufferCriptografado.toString('hex');
+            
             config.lembrarOperador = { 
                 usuario: usuario, 
-                senha: honestyHash(hashFinal) 
+                senha: senhaProtegidaHex 
             };
         } else {
             // Se o operador deslogar ou desmarcar, remove a propriedade de forma limpa
@@ -328,41 +339,44 @@ ipcMain.handle('salvar-lembrete-login', async (event, { usuario, senha, ativo })
         fs.writeFileSync(caminhoConfig, JSON.stringify(config, null, 2));
         return { status: 'sucesso' };
     } catch (err) {
-        console.error("Erro ao salvar lembrete de login:", err.message);
+        console.error("Erro ao salvar lembrete de login seguro:", err.message);
         return { status: 'erro', mensagem: err.message };
     }
 });
 
-// 📖 Canal para recuperar o login automático salvo
+// 📖 Canal para recuperar e descriptografar o login automático salvo
 ipcMain.handle('obter-lembrete-login', async () => {
     try {
         if (fs.existsSync(caminhoConfig)) {
             const config = JSON.parse(fs.readFileSync(caminhoConfig, 'utf8'));
             
-            console.log("\n[CONFIG.JSON] Conteúdo bruto lido do arquivo:", config.lembrarOperador);
+            if (config && config.lembrarOperador && config.lembrarOperador.senha) {
+                if (!safeStorage.isEncryptionAvailable()) {
+                    console.error("[SEGURANÇA] safeStorage indisponivel para decodificacao.");
+                    return { status: 'vazio' };
+                }
 
-            if (config && config.lembrarOperador) {
-                const senhaDesofuscada = desofuscarSenha(config.lembrarOperador.senha);
-                console.log(`[CONFIG.JSON] Usuário localizado: "${config.lembrarOperador.usuario}" | Hash extraído: "${senhaDesofuscada}"`);
+                // 1. Reconverte a string Hexadecimal armazenada de volta para Buffer binário
+                const bufferCriptografado = Buffer.from(config.lembrarOperador.senha, 'hex');
+                
+                // 2. Descriptografa o Buffer binário recuperando o Hash SHA-256 original
+                const senhaDesofuscadaHash = safeStorage.decryptString(bufferCriptografado);
+                
+                console.log(`[CONFIG.JSON] Usuario localizado de forma segura: "${config.lembrarOperador.usuario}"`);
                 
                 return { 
                     status: 'sucesso', 
                     usuario: config.lembrarOperador.usuario, 
-                    senhaHash: senhaDesofuscada
+                    senhaHash: senhaDesofuscadaHash
                 };
             }
         }
-        console.log("[CONFIG.JSON] Nenhuma credencial de login automático foi localizada.");
         return { status: 'vazio' };
     } catch (err) {
-        console.error("[CONFIG.JSON] Erro ao ler lembrete de login:", err);
+        console.error("[CONFIG.JSON] Erro crítico ao ler lembrete de login criptografado:", err.message);
         return { status: 'erro' };
     }
 });
-
-// Funções auxiliares simples para não salvar o hash puramente exposto no arquivo texto
-function honestyHash(text) { return Buffer.from(text).toString('base64'); }
-function desofuscarSenha(text) { return Buffer.from(text, 'base64').toString('utf8'); }
 
 // Canal para obter as estatísticas das tabelas locais
 ipcMain.handle('obter-status-sincronizacao', async () => {
