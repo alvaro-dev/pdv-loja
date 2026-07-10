@@ -618,46 +618,47 @@
                 return;
             }
 
-            // Captura o status da rede de forma segura
+            // Captura o status da rede e a presença de configurações de forma segura
             let bancoEstaOnline = false;
+            let bancoSemConfig = true;
             try {
                 const statusRedeBanco = await ipcRenderer.invoke('verificar-status-rede-banco');
                 bancoEstaOnline = !!(statusRedeBanco && statusRedeBanco.isOnline);
-                console.log("[BOOT-FRONT] Estado inicial do Postgres central:", bancoEstaOnline ? "ONLINE" : "OFFLINE");
+                bancoSemConfig = !!(statusRedeBanco && statusRedeBanco.semConfig);
+                console.log("[BOOT-FRONT] Estado do Postgres central - Online:", bancoEstaOnline, "| Sem Config:", bancoSemConfig);
+                
+                // 🌟 GATILHO COMPLEMENTAR: Se não houver configuração de banco, trava a tela e pede os parâmetros
+                if (bancoSemConfig) {
+                    exibirFormularioConfigBanco();
+                    return;
+                }
             } catch (err) {
                 console.error("Erro ao checar status de rede do banco:", err);
             }
 
             try {
-                // 🌟 CORREÇÃO MESTRE: Injeta o ID da máquina diretamente no input invisível da tela
-                // Sem chamar o 'carregar-caixa' prematuramente aqui, evitando o primeiro disparo de sync!
+                // Injeta o ID da máquina diretamente no input invisível da tela
                 if (document.getElementById('caixaId')) document.getElementById('caixaId').value = caixaIdDaMaquina;
                 
                 const badgeRede = document.getElementById('badgeRede');
                 if (badgeRede) {
-                    badgeRede.className = bancoEstaOnline ? 'badge-online' : 'msg-box offline';
+                    badgeRede.className = bancoEstaOnline ? 'badge-online' : 'badge-offline';
                     badgeRede.innerText = bancoEstaOnline ? 'ONLINE' : 'OFFLINE';
                 }
                                 
-                // 🤖 PROCESSAMENTO DO LOGIN AUTOMÁTICO (SE HOUVER)
+                // PROCESSAMENTO DO LOGIN AUTOMÁTICO (SE HOUVER)
                 console.log("[BOOT-FRONT] Buscando lembrete de login no config.json...");
                 const loginAuto = await ipcRenderer.invoke('obter-lembrete-login');
-                console.log("[BOOT-FRONT] Retorno do obter-lembrete-login:", loginAuto);
                 
                 if (loginAuto && loginAuto.status === 'sucesso') {
-                    console.log(`[BOOT-FRONT] Credenciais encontradas para o usuário "${loginAuto.usuario}". Disparando bypass...`);
-                    
                     if (document.getElementById('loginUsuario')) document.getElementById('loginUsuario').value = loginAuto.usuario;
                     if (document.getElementById('lembrarSenha')) document.getElementById('lembrarSenha').checked = true;
                     
-                    // Envia para a validação do processo Main
                     const respostaAuto = await ipcRenderer.invoke('tentar-login', { 
                         usuario: loginAuto.usuario, 
                         senha: loginAuto.senhaHash, 
                         caixaId: caixaIdDaMaquina 
                     });
-
-                    console.log("[BOOT-FRONT] Resposta do tentar-login automático:", respostaAuto);
 
                     if (respostaAuto && respostaAuto.status === 'sucesso') {
                         window.operadorLogado = respostaAuto.operador;
@@ -665,14 +666,9 @@
                         if (document.getElementById('navOperadorNome')) document.getElementById('navOperadorNome').innerText = respostaAuto.operador.nome;
                         
                         const ehAdmin = respostaAuto.operador.role === 'admin' || respostaAuto.operador.usuario === 'admin';
-                        if (document.getElementById('btnVerHistorico')) {
-                            document.getElementById('btnVerHistorico').style.display = ehAdmin ? 'block' : 'none';
-                        }
-                        if (document.getElementById('btnVerSincronizacao')) {
-                            document.getElementById('btnVerSincronizacao').style.display = ehAdmin ? 'block' : 'none';
-                        }
+                        if (document.getElementById('btnVerHistorico')) document.getElementById('btnVerHistorico').style.display = ehAdmin ? 'block' : 'none';
+                        if (document.getElementById('btnVerSincronizacao')) document.getElementById('btnVerSincronizacao').style.display = ehAdmin ? 'block' : 'none';
 
-                        // 🌟 SÓ DISPARA O CARREGAR E SYNC OFICIAL AQUI (APÓS SUCESSO DO LOGIN AUTOMÁTICO)
                         const dadosCaixa = await ipcRenderer.invoke('carregar-caixa', caixaIdDaMaquina);
                         if (dadosCaixa.status === 'sucesso') {
                             if (document.getElementById('navCaixaDescricao')) document.getElementById('navCaixaDescricao').innerText = dadosCaixa.dados.descricao;
@@ -696,11 +692,9 @@
                             }
                         }
                     } else {
-                        console.log("[BOOT-FRONT] Falha na validação do login automático. Exibindo tela limpa.");
                         resgatarLoginManual();
                     }
                 } else {
-                    console.log("[BOOT-FRONT] Sem login automático agendado. Aguardando operador.");
                     resgatarLoginManual();
                 }
             } catch (err) {
@@ -733,6 +727,50 @@
             if (document.getElementById('btnLogar')) document.getElementById('btnLogar').style.display = 'none';
         }
 
+        // 🌟 NOVA FUNÇÃO: Injeta o formulário com os inputs exigidos pela gravação do banco
+        function exibirFormularioConfigBanco() {
+            const divErroLogin = document.getElementById('erroLogin');
+            if (divErroLogin) {
+                divErroLogin.innerHTML = `
+                    <div style="text-align: left; font-size: 14px; line-height: 1.4; color: #333;">
+                        <span style="font-size: 15px; color: #0056b3;">🔗 <strong>Configuração do Servidor Central</strong></span><br>
+                        Nenhum parâmetro de rede PostgreSQL foi localizado nesta máquina. Preencha os dados abaixo:<br><br>
+                        
+                        <div style="margin-bottom: 8px;">
+                            <label style="font-size: 12px; font-weight: bold; margin-bottom: 2px; color: #555;">IP / Host do Servidor Linux:</label>
+                            <input type="text" id="cfgHost" placeholder="Ex: 192.168.0.16" style="padding: 6px; font-size: 14px;">
+                        </div>
+                        <div style="margin-bottom: 8px; display: flex; gap: 10px;">
+                            <div style="flex: 2;">
+                                <label style="font-size: 12px; font-weight: bold; margin-bottom: 2px; color: #555;">Nome do Banco:</label>
+                                <input type="text" id="cfgDatabase" placeholder="Ex: sysloja" style="padding: 6px; font-size: 14px;">
+                            </div>
+                            <div style="width: 90px;">
+                                <label style="font-size: 12px; font-weight: bold; margin-bottom: 2px; color: #555;">Porta:</label>
+                                <input type="number" id="cfgPort" value="5432" style="padding: 6px; font-size: 14px; text-align: center;">
+                            </div>
+                        </div>
+                        <div style="margin-bottom: 8px;">
+                            <label style="font-size: 12px; font-weight: bold; margin-bottom: 2px; color: #555;">Usuário do Banco:</label>
+                            <input type="text" id="cfgUser" placeholder="Ex: admloja" style="padding: 6px; font-size: 14px;">
+                        </div>
+                        <div style="margin-bottom: 15px;">
+                            <label style="font-size: 12px; font-weight: bold; margin-bottom: 2px; color: #555;">Senha do Banco:</label>
+                            <input type="password" id="cfgPassword" placeholder="Digite a senha master" style="padding: 6px; font-size: 14px;">
+                        </div>
+                        
+                        <button id="btnSalvarPostgresManual" style="margin-top: 0; padding: 10px; font-size: 15px; background-color: #007bff; color: white; border-radius: 4px; font-weight: bold;">Criptografar e Salvar Configurações</button>
+                    </div>
+                `;
+                divErroLogin.style.display = 'block';
+                
+                // Vincula o evento ao botão injetado para chamar a rotina de gravação
+                document.getElementById('btnSalvarPostgresManual').addEventListener('click', executarGravacaoManualPostgres);
+            }
+            // Oculta o botão padrão de login para forçar a configuração primeiro
+            if (document.getElementById('btnLogar')) document.getElementById('btnLogar').style.display = 'none';
+        }
+
         function exibirErroCaixaInvalido(mensagemErro) {
             const divErroLogin = document.getElementById('erroLogin');
             if (divErroLogin) {
@@ -755,17 +793,24 @@
         }
 
         // 🌟 NOVO: Função que processa e grava os parâmetros relacionais do Postgres com timer de 10s
+        // 🌟 ATUALIZADO: Processa e grava os parâmetros relacionais do Postgres de forma síncrona
         async function executarGravacaoManualPostgres() {
+            const hostInput = document.getElementById('cfgHost');
+            const dbInput = document.getElementById('cfgDatabase');
+            const userInput = document.getElementById('cfgUser');
+            const passInput = document.getElementById('cfgPassword');
+            const portInput = document.getElementById('cfgPort');
+
             const dadosBanco = {
-                host: document.getElementById('cfgHost').value,
-                database: document.getElementById('cfgDatabase').value,
-                port: document.getElementById('cfgPort').value,
-                user: document.getElementById('cfgUser').value,
-                password: document.getElementById('cfgPassword').value
+                host: hostInput ? hostInput.value.trim() : "",
+                database: dbInput ? dbInput.value.trim() : "",
+                port: portInput ? portInput.value.trim() : "5432",
+                user: userInput ? userInput.value.trim() : "",
+                password: passInput ? passInput.value : ""
             };
 
-            if (!dadosBanco.host || !dadosBanco.database || !dadosBanco.user) {
-                alert("⚠️ Preencha todos os parâmetros estruturais obrigatórios do banco!");
+            if (!dadosBanco.host || !dadosBanco.database || !dadosBanco.user || !dadosBanco.password) {
+                alert("⚠️ Preencha todos os campos obrigatórios para estabelecer a conexão com o PostgreSQL central!");
                 return;
             }
 
@@ -781,11 +826,11 @@
                 
                 const intervaloTimer = setInterval(() => {
                     divErroLogin.innerHTML = `
-                        <div style="font-size: 15px; line-height: 1.6;">
-                            🏦 <strong>Parâmetros de Conexão Atualizados!</strong><br><br>
-                            As chaves de banco foram injetadas com sucesso no arquivo local.<br>
-                            O sistema será encerrado em <strong>${segundosRestantes} segundos</strong> para inicializar os drivers de rede.<br><br>
-                            <span style="color: #155724; font-weight: bold;">Por favor, abra o PDV novamente para efetuar o login.</span>
+                        <div style="font-size: 15px; line-height: 1.6; color: #155724;">
+                            🏦 <strong>Parâmetros de Conexão Gravados!</strong><br><br>
+                            As credenciais de rede foram criptografadas e salvas com sucesso.<br>
+                            O sistema será encerrado em <strong>${segundosRestantes} segundos</strong> para inicializar os canais de dados.<br><br>
+                            <strong>Abra o aplicativo novamente para realizar o login.</strong>
                         </div>
                     `;
                     
@@ -797,7 +842,7 @@
                     }
                 }, 1000);
             } else {
-                alert(`❌ Falha ao gravar parâmetros no config.json: ${resultado.message}`);
+                alert(`❌ Falha ao processar criptografia de rede: ${resultado.message}`);
             }
         }
 

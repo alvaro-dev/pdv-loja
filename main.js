@@ -77,35 +77,45 @@ function iniciarTimerSincronizacao() {
     }, 600000); // 600.000 ms = Exatamente 10 minutos
 }
 
-// Inicializa o app e os bancos de dados
+// Inicializa o app e os bancos de dados de forma segura
 app.whenReady().then(async () => {
     // Garante que a estrutura básica do arquivo exista
     obterCaixaIdDaMaquina(); 
     
     let dadosBanco = null;
     try {
-        const arquivoConfig = JSON.parse(fs.readFileSync(caminhoConfig, 'utf8'));
-        // Se existir a propriedade banco no JSON, captura ela
-        if (arquivoConfig && arquivoConfig.banco) {
-            dadosBanco = arquivoConfig.banco;
+        if (fs.existsSync(caminhoConfig)) {
+            const arquivoConfig = JSON.parse(fs.readFileSync(caminhoConfig, 'utf8'));
+            
+            // 🌟 VERIFICAÇÃO SEGUNDA ONDA: Se houver a chave criptografada, descriptografa na hora
+            if (arquivoConfig && arquivoConfig.bancoCriptografado) {
+                if (safeStorage.isEncryptionAvailable()) {
+                    const bufferCriptografado = Buffer.from(arquivoConfig.bancoCriptografado, 'hex');
+                    const jsonStringDescriptografada = safeStorage.decryptString(bufferCriptografado);
+                    dadosBanco = JSON.parse(jsonStringDescriptografada);
+                    console.log("[SEGURANÇA] Parametros de rede do Postgres descriptografados com sucesso.");
+                } else {
+                    console.error("[SEGURANÇA] safeStorage indisponivel no bootstrap do app.");
+                }
+            } 
+            // 🔄 RETROCOMPATIBILIDADE TEMPORÁRIA: Se ainda estiver em texto limpo do formato antigo, captura
+            else if (arquivoConfig && arquivoConfig.banco) {
+                dadosBanco = arquivoConfig.banco;
+                console.log("[AVISO] Detectados parametros em texto limpo. Eles serao migrados no proximo salvamento.");
+            }
         }
     } catch (e) {
-        console.error("Não foi possível ler os parâmetros do banco no config.json");
+        console.error("Nao foi possivel ler ou descriptografar os parametros do banco no config.json:", e.message);
     }
     
-    // 🌟 Passa os dados encontrados (ou null caso não existam) para o banco de dados
+    // Passa os dados descriptografados em memoria (ou null) para o inicializador do banco
     await db.init(dadosBanco); 
-    
-    // Dispara a sincronização de operadores logo após iniciar o banco
-    //db.sincronizarOperadores() //
-    //    .then(res => console.log(`[SYNC] Operadores prontos:`, res)) //
-    //    .catch(err => console.error(`[SYNC] Falha ao sincronizar operadores no início:`, err)); //
 
-    createWindow(); //
-    iniciarTimerSincronizacao(); //
+    createWindow(); 
+    iniciarTimerSincronizacao(); 
 
-    app.on('activate', () => { //
-        if (BrowserWindow.getAllWindows().length === 0) createWindow(); //
+    app.on('activate', () => { 
+        if (BrowserWindow.getAllWindows().length === 0) createWindow(); 
     });
 });
 
@@ -301,7 +311,7 @@ ipcMain.handle('obter-vendas-periodo', async (event, { caixaId, dataAbertura, da
 // 🔒 IMPORTAÇÃO DO MÓDULO DE SEGURANÇA NATIVO DO ELECTRON
 const { safeStorage } = require('electron');
 
-// 💾 Canal Corrigido: Criptografa a senha usando chaves do Sistema Operacional (safeStorage)
+// 💾 Canal Corrigido: Criptografa o bloco inteiro do operador em uma única linha hex
 ipcMain.handle('salvar-lembrete-login', async (event, { usuario, senha, ativo }) => {
     try {
         const crypto = require('crypto');
@@ -316,27 +326,34 @@ ipcMain.handle('salvar-lembrete-login', async (event, { usuario, senha, ativo })
                 ? senha 
                 : crypto.createHash('sha256').update(senha).digest('hex');
             
-            // 2. Verifica se a criptografia do safeStorage está disponível no Sistema Operacional
             if (!safeStorage.isEncryptionAvailable()) {
-                throw new Error("A criptografia nativa do sistema operacional nao esta disponivel neste ambiente.");
+                throw new Error("A criptografia nativa do sistema operacional nao esta disponivel.");
             }
 
-            // 3. Criptografa o Hash SHA-256 gerando um Buffer binário seguro
-            const bufferCriptografado = safeStorage.encryptString(hashFinal);
-            
-            // 4. Converte o Buffer em uma string Hexadecimal pura para persistência segura no JSON
-            const senhaProtegidaHex = bufferCriptografado.toString('hex');
-            
-            config.lembrarOperador = { 
-                usuario: usuario, 
-                senha: senhaProtegidaHex 
+            // 2. Cria o objeto estruturado que queremos proteger
+            const dadosLembrete = {
+                usuario: usuario.trim(),
+                senha: hashFinal
             };
+
+            // 3. Transforma o objeto em string e criptografa em um bloco único
+            const stringLembrete = JSON.stringify(dadosLembrete);
+            
+            // 🔥 CORREÇÃO AQUI: Alterado de 'stringBanco' para 'stringLembrete'
+            const bufferCriptografado = safeStorage.encryptString(stringLembrete); 
+            
+            config.lembrarOperadorCriptografado = bufferCriptografado.toString('hex');
+            
+            // Remove a propriedade antiga estruturada se ela existir no arquivo por segurança
+            delete config.lembrarOperador;
         } else {
-            // Se o operador deslogar ou desmarcar, remove a propriedade de forma limpa
+            // Se o operador deslogar ou desmarcar, remove as chaves de forma limpa
+            delete config.lembrarOperadorCriptografado;
             delete config.lembrarOperador;
         }
         
         fs.writeFileSync(caminhoConfig, JSON.stringify(config, null, 2));
+        console.log("[SEGURANÇA] Dados do operador salvos e criptografados em bloco unico.");
         return { status: 'sucesso' };
     } catch (err) {
         console.error("Erro ao salvar lembrete de login seguro:", err.message);
@@ -344,25 +361,36 @@ ipcMain.handle('salvar-lembrete-login', async (event, { usuario, senha, ativo })
     }
 });
 
-// 📖 Canal para recuperar e descriptografar o login automático salvo
+// 📖 Canal para recuperar e decodificar o bloco único do operador automático
 ipcMain.handle('obter-lembrete-login', async () => {
     try {
         if (fs.existsSync(caminhoConfig)) {
             const config = JSON.parse(fs.readFileSync(caminhoConfig, 'utf8'));
             
-            if (config && config.lembrarOperador && config.lembrarOperador.senha) {
+            // 1. Tenta ler o novo formato em string Hexadecimal única
+            if (config && config.lembrarOperadorCriptografado) {
                 if (!safeStorage.isEncryptionAvailable()) {
                     console.error("[SEGURANÇA] safeStorage indisponivel para decodificacao.");
                     return { status: 'vazio' };
                 }
 
-                // 1. Reconverte a string Hexadecimal armazenada de volta para Buffer binário
+                const bufferCriptografado = Buffer.from(config.lembrarOperadorCriptografado, 'hex');
+                const stringDescriptografada = safeStorage.decryptString(bufferCriptografado);
+                const operadorDados = JSON.parse(stringDescriptografada);
+                
+                console.log(`[CONFIG.JSON] Usuario localizado via bloco seguro unico: "${operadorDados.usuario}"`);
+                return { 
+                    status: 'sucesso', 
+                    usuario: operadorDados.usuario, 
+                    senhaHash: operadorDados.senha
+                };
+            }
+            // 🔄 RETROCOMPATIBILIDADE: Se ainda estiver no formato antigo de strings hex separadas
+            else if (config && config.lembrarOperador && config.lembrarOperador.senha) {
+                if (!safeStorage.isEncryptionAvailable()) return { status: 'vazio' };
+
                 const bufferCriptografado = Buffer.from(config.lembrarOperador.senha, 'hex');
-                
-                // 2. Descriptografa o Buffer binário recuperando o Hash SHA-256 original
                 const senhaDesofuscadaHash = safeStorage.decryptString(bufferCriptografado);
-                
-                console.log(`[CONFIG.JSON] Usuario localizado de forma segura: "${config.lembrarOperador.usuario}"`);
                 
                 return { 
                     status: 'sucesso', 
@@ -373,7 +401,7 @@ ipcMain.handle('obter-lembrete-login', async () => {
         }
         return { status: 'vazio' };
     } catch (err) {
-        console.error("[CONFIG.JSON] Erro crítico ao ler lembrete de login criptografado:", err.message);
+        console.error("[CONFIG.JSON] Erro critico ao ler lembrete de login criptografado:", err.message);
         return { status: 'erro' };
     }
 });
@@ -416,7 +444,7 @@ ipcMain.handle('atualizar-caixa-id-config', async (event, novoCaixaId) => {
     }
 });
 
-// 🌟 NOVO: Canal para gravar os parâmetros do Postgres recebidos do front-end
+// 💾 Canal Corrigido: Criptografa as credenciais do Postgres antes de salvar no config.json
 ipcMain.handle('atualizar-banco-config', async (event, dadosBanco) => {
     try {
         let config = {};
@@ -424,19 +452,34 @@ ipcMain.handle('atualizar-banco-config', async (event, dadosBanco) => {
             config = JSON.parse(fs.readFileSync(caminhoConfig, 'utf8'));
         }
         
-        // Injeta ou atualiza a propriedade do banco de dados de forma higienizada
-        config.banco = {
+        // 1. Estrutura o objeto de conexão de forma higienizada
+        const estruturaBanco = {
             host: dadosBanco.host.trim(),
             database: dadosBanco.database.trim(),
             user: dadosBanco.user.trim(),
             password: dadosBanco.password,
             port: parseInt(dadosBanco.port) || 5432
         };
+
+        if (!safeStorage.isEncryptionAvailable()) {
+            throw new Error("A criptografia nativa do sistema operacional nao esta disponivel.");
+        }
+
+        // 2. Converte o objeto do banco em String e depois criptografa gerando um Buffer
+        const stringBanco = JSON.stringify(estruturaBanco);
+        const bufferCriptografado = safeStorage.encryptString(stringBanco);
+        
+        // 3. Converte o Buffer em Hexadecimal limpo para salvar no arquivo JSON de texto plano
+        config.bancoCriptografado = bufferCriptografado.toString('hex');
+        
+        // Remove a propriedade antiga em texto limpo se ela existir por segurança
+        delete config.banco;
         
         fs.writeFileSync(caminhoConfig, JSON.stringify(config, null, 2));
+        console.log("[SEGURANÇA] Novas credenciais de banco salvas de forma criptografada.");
         return { status: 'sucesso' };
     } catch (err) {
-        console.error("Erro ao salvar parâmetros do Postgres:", err);
+        console.error("Erro ao salvar e criptografar parametros do Postgres:", err);
         return { status: 'erro', message: err.message };
     }
 });
@@ -445,9 +488,21 @@ ipcMain.handle('buscar-clientes-pdv', async (event, termo) => {
     return await db.buscarClientesLocais(termo);
 });
 
-// 🌟 NOVO: Canal para expor ao front-end se o Postgres conseguiu inicializar online
+// 🌟 MODIFICADO: Canal expõe o status online e valida se o config.json possui credenciais de banco
 ipcMain.handle('verificar-status-rede-banco', async () => {
-    return { isOnline: db.isOnline };
+    let semConfig = true;
+    try {
+        if (fs.existsSync(caminhoConfig)) {
+            const config = JSON.parse(fs.readFileSync(caminhoConfig, 'utf8'));
+            if (config.bancoCriptografado || config.banco) {
+                semConfig = false;
+            }
+        }
+    } catch (e) {
+        console.error("Erro ao auditar presenca de chaves no config.json:", e.message);
+    }
+    
+    return { isOnline: db.isOnline, semConfig };
 });
 
 // 🌟 NOVO: Canal para processar a emissão do cupom de crediário
