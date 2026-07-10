@@ -929,104 +929,17 @@ class DatabaseManager {
 
     async registrarVenda(caixaId, operadorId, total, formaPagamento, origem, descricaoMovimento, bandeira = null, parcelas = 1, clienteId = '00000000-0000-0000-0000-000000000000') {
         try {
-            console.log("[BANCO] Iniciando fluxo de registro de venda...");
+            console.log("[BANCO] Iniciando gravação direta dos dados validados da venda...");
             
-            let idVenda = null;
-            let dataAtual = null;
-
-            try {
-                idVenda = crypto.randomUUID();
-                dataAtual = obterDataHoraLocalANSI();
-            } catch (errParams) {
-                console.error("[ERRO - registrarVenda (Geracao de Metadados)]:", errParams.message);
-                throw new Error("Falha interna ao gerar identificadores para a venda.");
-            }
-
-            // TRAVA DE SEGURANÇA ANTICORRUPÇÃO: Garante que vendas em Crediário nunca salvem informações de bandeira de cartão
-            if (formaPagamento === 'CR') {
-                bandeira = null;
-            }
+            let idVenda = crypto.randomUUID();
+            const dataAtual = obterDataHoraLocalANSI();
 
             // CAPTURA DOS IDS GLOBAIS DE GOVERNANÇA EM MEMÓRIA
             const empIdGlobal = this.tenantEmpresaId;
             const filIdGlobal = this.tenantFilialId;
 
-            // =====================================================================
-            // TRAVA DE CRÉDITO HÍBRIDA: Checagem em Tempo Real na Rede (CR)
-            // =====================================================================
-            if (formaPagamento === 'CR') {
-                if (clienteId === '00000000-0000-0000-0000-000000000000' || !clienteId) {
-                    console.log("[BANCO (RECUSADO)]: Tentativa de crediario sem cliente nominal.");
-                    throw new Error("Operacao Recusada: Vendas no Crediario exigem obrigatoriamente a identificacao de um Cliente nominal.");
-                }
-
-                let dadosCliente = null;
-                try {
-                    dadosCliente = await new Promise((resolve, reject) => {
-                        this.sqliteDb.get(`SELECT nome, limite_credito FROM clientes_locais WHERE id = ?`, [clienteId], (err, row) => {
-                            if (err) reject(err);
-                            else resolve(row || null);
-                        });
-                    });
-                } catch (errCliLite) {
-                    console.error("[ERRO - registrarVenda (Consultar Cliente SQLite)]:", errCliLite.message);
-                    throw new Error("Falha ao validar cadastro do cliente na base local.");
-                }
-
-                if (!dadosCliente) {
-                    console.log(`[BANCO (RECUSADO)]: Cliente com ID ${clienteId} nao localizado no terminal.`);
-                    throw new Error("Operacao Recusada: Cliente nao localizado na base de dados do terminal.");
-                }
-
-                const tetoCadastrado = parseFloat(dadosCliente.limite_credito || 0);
-                const valorVendaAtual = parseFloat(total || 0);
-                let totalDebitosAtuais = 0;
-
-                if (this.isOnline) {
-                    try {
-                        console.log("[BANCO] Consultando debitos globais do cliente no Postgres...");
-                        const querySaldoGlobal = `
-                            SELECT COALESCE(SUM(saldo_restante), 0) as total_devido 
-                            FROM contas_a_receber 
-                            WHERE cliente_id = $1::uuid AND status = 'P' AND deletado = false
-                        `;
-                        const resSaldoGlobal = await this.pgClient.query(querySaldoGlobal, [clienteId]);
-                        totalDebitosAtuais = parseFloat(resSaldoGlobal.rows[0].total_devido || 0);
-                    } catch (err) {
-                        console.error("[ERRO - registrarVenda (Saldo Global Postgres)]:", err.message);
-                        this.isOnline = false;
-                    }
-                }
-
-                if (!this.isOnline) {
-                    try {
-                        console.log("[BANCO] Consultando debitos locais do cliente no SQLite...");
-                        totalDebitosAtuais = await new Promise((resolve, reject) => {
-                            this.sqliteDb.get(
-                                `SELECT COALESCE(SUM(valor_original), 0) as total_devido FROM contas_a_receber_locais WHERE cliente_id = ? AND status = 'P' AND deletado = 0`,
-                                [clienteId],
-                                (err, row) => {
-                                    if (err) reject(err);
-                                    else resolve(row ? (row.total_devido || 0) : 0);
-                                }
-                            );
-                        });
-                    } catch (errSaldoLite) {
-                        console.error("[ERRO - registrarVenda (Saldo Local SQLite)]:", errSaldoLite.message);
-                    }
-                }
-
-                const limiteDisponivel = tetoCadastrado - totalDebitosAtuais;
-
-                if ((totalDebitosAtuais + valorVendaAtual) > tetoCadastrado) {
-                    console.log(`[BANCO (RECUSADO)]: Limite insuficiente para o cliente ${dadosCliente.nome}`);
-                    throw new Error(`Limite Insuficiente: O cliente "${dadosCliente.nome}" possui teto de R$ ${tetoCadastrado.toFixed(2)}. Ele ja possui R$ ${totalDebitosAtuais.toFixed(2)} em debitos em aberto na rede. Limite restante: R$ ${limiteDisponivel.toFixed(2)}. Esta nova compra totaliza R$ ${valorVendaAtual.toFixed(2)}.`);
-                }
-            }
-
-            // 1. SALVA A VENDA NO SQLITE LOCAL PRIMEIRO
+            // 1. PERSISTÊNCIA DO CABEÇALHO DA VENDA NO SQLITE LOCAL
             try {
-                console.log("[BANCO] Salvando cabecalho da venda no SQLite local...");
                 await new Promise((resolve, reject) => {
                     const queryLite = `
                         INSERT INTO vendas_locais (id, caixa_id, operador_id, cliente_id, forma_pagamento, origem, total, descricao_movimento, data_venda, sincronizado, deletado, bandeira, parcelas) 
@@ -1039,16 +952,14 @@ class DatabaseManager {
                     );
                 });
             } catch (errSaleLite) {
-                console.error("[ERRO CRITICO - registrarVenda (Gravar venda SQLite)]:", errSaleLite.message);
-                throw new Error("Nao foi possivel registrar o cabecalho da venda localmente.");
+                console.error("[ERRO CRITICO - registrarVenda (SQLite)]:", errSaleLite.message);
+                throw new Error("Não foi possível registrar o cabeçalho da venda localmente.");
             }
 
-            // 2. GERAÇÃO DE PARCELAS NO CREDIÁRIO DESMEMBRADO (CR) NO SQLITE
+            // 2. DESMEMBRAMENTO DE PARCELAS DE CREDIÁRIO (CR) NO SQLITE
             if (formaPagamento === 'CR' && total > 0) {
                 try {
-                    console.log(`[BANCO] Gerando ${parcelas} parcelas de crediario no SQLite...`);
                     const valorPorParcela = total / parcelas;
-                    
                     for (let i = 1; i <= parcelas; i++) {
                         const idConta = crypto.randomUUID();
                         const dataVencimento = new Date();
@@ -1066,15 +977,14 @@ class DatabaseManager {
                         });
                     }
                 } catch (errCRLite) {
-                    console.error("[ERRO CRITICO - registrarVenda (Gerar parcelas crediario SQLite)]:", errCRLite.message);
-                    throw new Error("Falha interna ao desmembrar parcelas de crediario local.");
+                    console.error("[ERRO CRITICO - registrarVenda (Desmembrar CR SQLite)]:", errCRLite.message);
+                    throw new Error("Falha interna ao desmembrar parcelas de crediário local.");
                 }
             }
 
-            // GERAÇÃO DE PARCELAS SE FOR CARTÃO (CC) NO SQLITE LOCAL
+            // 3. DESMEMBRAMENTO DE PARCELAS DE CARTÃO (CC) NO SQLITE LOCAL
             if (formaPagamento === 'CC' && total > 0) {
                 try {
-                    console.log(`[BANCO] Gerando ${parcelas} parcelas de recebivel de cartao no SQLite...`);
                     const valorPorParcela = total / parcelas;
                     for (let i = 1; i <= parcelas; i++) {
                         const idRecebivel = crypto.randomUUID();
@@ -1092,31 +1002,27 @@ class DatabaseManager {
                         });
                     }
                 } catch (errCCLite) {
-                    console.error("[ERRO CRITICO - registrarVenda (Gerar recebiveis cartao SQLite)]:", errCCLite.message);
-                    throw new Error("Falha interna ao desmembrar parcelas de cartao local.");
+                    console.error("[ERRO CRITICO - registrarVenda (Desmembrar CC SQLite)]:", errCCLite.message);
+                    throw new Error("Falha interna ao desmembrar parcelas de cartão local.");
                 }
             }
 
-            // 3. REPLICAÇÃO EM TEMPO REAL PRO POSTGRESQL (SE ONLINE)
+            // 4. REPLICAÇÃO EM TEMPO REAL PRO POSTGRESQL (SE ONLINE)
             if (this.isOnline) {
                 try {
-                    if (!empIdGlobal) throw new Error("Dados de governanca (Empresa ID) ausentes no escopo.");
+                    if (!empIdGlobal) throw new Error("Dados de governança (Empresa ID) ausentes no escopo.");
 
                     const escopoVendas = this.obterEscopoTabela('vendas');
                     const filialPgValor = (escopoVendas === 'COMPARTILHADO') ? null : filIdGlobal;
 
-                    console.log("[POSTGRES] Replicando venda pai no servidor remoto...");
-                    
-                    // Aplicado cast explicito nos campos UUID e TIMESTAMP para adequacao estrita
                     const queryPG = `
                         INSERT INTO vendas (id, caixa_id, operador_id, cliente_id, forma_pagamento, origem, total, descricao_movimento, data_venda, bandeira, parcelas, empresa_id, filial_id) 
                         VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5, $6, $7, $8, $9::timestamp, $10, $11, $12::uuid, $13::uuid)
                     `;
                     await this.pgClient.query(queryPG, [idVenda, caixaId, operadorId, clienteId, formaPagamento, origem, total, descricaoMovimento, dataAtual, bandeira, parcelas, empIdGlobal, filialPgValor]);
                     
-                    // UPLOAD DAS MÚLTIPLAS PARCELAS DE CREDIÁRIO PRO POSTGRES
+                    // Upload assíncrono das parcelas de Crediário pro Postgres
                     if (formaPagamento === 'CR') {
-                        console.log("[POSTGRES] Replicando parcelas de crediario no servidor remoto...");
                         const contasLocais = await new Promise((resolve) => {
                             this.sqliteDb.all(`SELECT * FROM contas_a_receber_locais WHERE venda_id = ?`, [idVenda], (err, rows) => resolve(rows || []));
                         });
@@ -1130,19 +1036,17 @@ class DatabaseManager {
                                 INSERT INTO contas_a_receber (id, empresa_id, filial_id, venda_id, cliente_id, parcela_numero, total_parcelas, data_emissao, data_vencimento, valor_original, valor_juros, valor_multa, valor_pago, saldo_restante, status, deletado)
                                 VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5::uuid, $6, $7, $8::timestamp, $9::date, $10, 0.00, 0.00, 0.00, $11, 'P', false)
                             `;
-                            
                             await this.pgClient.query(queryCRPostgres, [
                                 conta.id, empIdGlobal, filialCRPgValor, idVenda, clienteId,
                                 nrParcela, parcelas, dataAtual, conta.data_vencimento, conta.valor_original, conta.valor_original
                             ]);
-
                             this.sqliteDb.run(`UPDATE contas_a_receber_locais SET sincronizado = 1 WHERE id = ?`, [conta.id]);
                             nrParcela++;
                         }
                     }
 
+                    // Upload assíncrono das parcelas de Cartão pro Postgres
                     if (formaPagamento === 'CC') {
-                        console.log("[POSTGRES] Replicando parcelas de cartao no servidor remoto...");
                         const escopoRecebiveis = this.obterEscopoTabela('recebiveis_cartao');
                         const filialRecPgValor = (escopoRecebiveis === 'COMPARTILHADO') ? null : filIdGlobal;
 
@@ -1156,20 +1060,17 @@ class DatabaseManager {
                     }
 
                     this.sqliteDb.run(`UPDATE vendas_locais SET sincronizado = 1 WHERE id = ?`, [idVenda]);
-                    console.log("[BANCO] Fluxo completo de faturamento online concluido com exito.");
                     return { status: 'sucesso', modo: 'ONLINE', id: idVenda };
-                    
-                } catch (err) {
-                    console.error("[BANCO] Erro ao espelhar transacao no Postgres, operando em contingencia:", err.message);
+                } catch (errPg) {
+                    console.error("[BANCO] Falha ao espelhar no Postgres, mantido em contingência local:", errPg.message);
                     this.isOnline = false;
                 }
             }
 
-            console.log("[BANCO] Fluxo concluido em modo de contingencia offline.");
             return { status: 'sucesso', modo: 'OFFLINE (SQLite)', id: idVenda };
 
         } catch (errGlobal) {
-            console.error("[ERRO CRITICO - registrarVenda FATAL]: Excecao nao tratada no pipeline de vendas:", errGlobal.message);
+            console.error("[ERRO CRITICO - database.registrarVenda]:", errGlobal.message);
             return { status: 'erro', mensagem: errGlobal.message };
         }
     }

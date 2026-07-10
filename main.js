@@ -2,6 +2,7 @@ const { app, BrowserWindow, ipcMain } = require('electron');
 const path = require('path');
 const fs = require('fs'); // Módulo para ler/escrever arquivos
 const db = require('./database');
+const vendaService = require('./services/VendaService'); // 🌟 INCLUSÃO DA NOVA CAMADA
 
 let mainWindow;
 
@@ -152,44 +153,21 @@ app.on('window-all-closed', () => {
 
 ipcMain.handle('efetuar-venda', async (event, dadosVenda) => {
     try {
-        const { 
-            caixaId, 
-            operadorId, 
-            total, 
-            formaPagamento, 
-            origem, 
-            descricaoMovimento,
-            bandeira,
-            parcelas,
-            clienteId // 🌟 CAPTURA DO OBJETO DO FRONT-END
-        } = dadosVenda;
-        
-        const resultado = await db.registrarVenda(
-            caixaId, 
-            operadorId, 
-            total, 
-            formaPagamento, 
-            origem, 
-            descricaoMovimento,
-            bandeira,
-            parcelas,
-            clienteId // 🌟 PASSA PARA O MÉTODO DO BANCO
-        );
+        // 🚀 O fluxo agora passa pela validação analítica do Service antes de gravar
+        const resultado = await vendaService.validarERegistrarVenda(dadosVenda);
 
-        // 🌟 NOVO: Atualiza a barra superior imediatamente caso a venda mude o estado para offline
+        // Atualiza a barra superior imediatamente caso a venda mude o estado para offline
         if (mainWindow && mainWindow.webContents) {
             mainWindow.webContents.send('notificar-status-rede', { isOnline: db.isOnline });
         }
         
         return resultado;
     } catch (error) {
-        console.error("Erro processando venda no processo Main:", error);
+        console.error("[Main IPC] Erro interceptado na validação da venda:", error.message);
         return { status: 'erro', mensagem: error.message };
     }
 });
 
-// Canal para carregar os dados do caixa na inicialização
-// Canal para carregar os dados do caixa na inicialização com metadados corporativos
 // Canal para carregar os dados do caixa na inicialização de forma ASSÍNCRONA (Não Bloqueante)
 ipcMain.handle('carregar-caixa', async (event, caixaId) => {
     try {
