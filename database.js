@@ -743,118 +743,71 @@ class DatabaseManager {
 
     async obterResumoTurnoAtual(caixaId) {
         try {
-            console.log("[BANCO] Iniciando levantamento do resumo do turno atual...");
+            console.log("[BANCO] Levantando resumo do turno via CaixaRepository...");
             let movimento = null;
             
             if (this.isOnline) {
                 try {
-                    console.log("[POSTGRES] Buscando metadados do turno ativo no servidor remoto...");
-                    // Aplicado cast explicito ::uuid para alcancar compatibilidade estrita com a coluna do Postgres
-                    const queryMov = `SELECT id, valor_abertura, data_abertura FROM movimentos_caixa WHERE caixa_id = $1::uuid AND status = 'A' AND deletado = false LIMIT 1`;
-                    const res = await this.pgClient.query(queryMov, [caixaId]);
-                    if (res.rows.length > 0) {
-                        movimento = res.rows[0];
-                    }
+                    movimento = await this.caixas.obterMovimentoAtivoPostgres(caixaId);
                 } catch (err) { 
-                    console.error("[ERRO - obterResumoTurnoAtual (Buscar Movimento Postgres)]:", err.message);
+                    console.error("[ERRO - obterResumoTurnoAtual Postgres]:", err.message);
                     this.isOnline = false; 
                 }
             }
             
             if (!movimento) {
-                try {
-                    console.log("[BANCO] Buscando metadados do turno ativo no SQLite local...");
-                    movimento = await new Promise((resolve, reject) => {
-                        const queryLiteMov = `SELECT id, valor_abertura, data_abertura FROM movimentos_caixa_locais WHERE caixa_id = ? AND status = 'A' AND deletado = 0`;
-                        this.sqliteDb.get(queryLiteMov, [caixaId], (err, row) => {
-                            if (err) reject(err);
-                            else resolve(row || null);
-                        });
-                    });
-                } catch (errLiteMov) {
-                    console.error("[ERRO - obterResumoTurnoAtual (Buscar Movimento SQLite)]:", errLiteMov.message);
-                }
+                movimento = await this.caixas.obterMovimentoAtivoSQLite(caixaId);
             }
 
             if (!movimento) {
-                console.log("[BANCO] Resumo abortado: Nenhum turno aberto localizado para este caixa.");
                 return { status: 'erro', mensagem: 'Nenhum turno aberto encontrado para este caixa.' };
             }
 
-            const dataAberturaTurno = movimento.data_abertura;
+            const dataAberturaTurno = movimento.data_abertura || movimento.dataAbertura;
             let vendas = [];
 
             if (this.isOnline) {
                 try {
-                    console.log("[POSTGRES] Coletando lote de vendas do turno no servidor remoto...");
-                    // Aplicados os casts explicitos ::uuid e ::timestamp para correspondencia de tipos no Postgres
-                    const queryPG = `
-                        SELECT origem, total, forma_pagamento FROM vendas 
-                        WHERE caixa_id = $1::uuid AND data_venda >= $2::timestamp AND deletado = false
-                    `;
-                    const res = await this.pgClient.query(queryPG, [caixaId, dataAberturaTurno]);
-                    vendas = res.rows;
+                    vendas = await this.caixas.listarVendasParaResumoPostgres(caixaId, dataAberturaTurno);
                 } catch (err) { 
-                    console.error("[ERRO - obterResumoTurnoAtual (Listar Vendas Postgres)]:", err.message);
+                    console.error("[ERRO - obterResumoTurnoAtual Listar Postgres]:", err.message);
                     this.isOnline = false; 
                 }
             }
             
             if (!this.isOnline) {
-                try {
-                    console.log("[BANCO] Coletando lote de vendas do turno no SQLite local...");
-                    vendas = await new Promise((resolve, reject) => {
-                        const queryLite = `
-                            SELECT origem, total, forma_pagamento FROM vendas_locais 
-                            WHERE caixa_id = ? AND data_venda >= ? AND deletado = 0
-                        `;
-                        this.sqliteDb.all(queryLite, [caixaId, dataAberturaTurno], (err, rows) => {
-                            if (err) reject(err);
-                            else resolve(rows || []);
-                        });
-                    });
-                } catch (errLiteSales) {
-                    console.error("[ERRO - obterResumoTurnoAtual (Listar Vendas SQLite)]:", errLiteSales.message);
-                    vendas = []; // Força inicialização em caso de falha física de leitura
-                }
+                vendas = await this.caixas.listarVendasParaResumoSQLite(caixaId, dataAberturaTurno);
             }
 
-            console.log(`[BANCO] Processando somatorio financeiro sobre ${vendas.length} lancamentos localizados...`);
             let totalEntradas = 0;
             let totalSaidas = 0;
 
             const detalheFormas = {
-            DN: { nome: 'Dinheiro', entradas: 0, saidas: 0 },
-            CC: { nome: 'Cartao de Credito', entradas: 0, saidas: 0 },
-            CD: { nome: 'Cartao de Debito', entradas: 0, saidas: 0 },
-            PX: { nome: 'Pix', entradas: 0, saidas: 0 },
-            CR: { nome: 'Crediario', entradas: 0, saidas: 0 } // 🌟 Mapeado de forma limpa
-        };
+                DN: { nome: 'Dinheiro', entradas: 0, saidas: 0 },
+                CC: { nome: 'Cartao de Credito', entradas: 0, saidas: 0 },
+                CD: { nome: 'Cartao de Debito', entradas: 0, saidas: 0 },
+                PX: { nome: 'Pix', entradas: 0, saidas: 0 },
+                CR: { nome: 'Crediario', entradas: 0, saidas: 0 }
+            };
 
-            try {
-                vendas.forEach(v => {
-                    const valor = parseFloat(v.total || 0);
-                    const forma = v.forma_pagamento;
+            vendas.forEach(v => {
+                const valor = parseFloat(v.total || v.valor || 0);
+                const forma = v.forma_pagamento;
 
-                    if (detalheFormas[forma]) {
-                        if (v.origem === 'E') {
-                            totalEntradas += valor;
-                            detalheFormas[forma].entradas += valor;
-                        } else if (v.origem === 'S') {
-                            totalSaidas += valor;
-                            detalheFormas[forma].saidas += valor;
-                        }
+                if (detalheFormas[forma]) {
+                    if (v.origem === 'E') {
+                        totalEntradas += valor;
+                        detalheFormas[forma].entradas += valor;
+                    } else if (v.origem === 'S') {
+                        totalSaidas += valor;
+                        detalheFormas[forma].saidas += valor;
                     }
-                });
-            } catch (errCalc) {
-                console.error("[ERRO - obterResumoTurnoAtual (Iteracao/Calculo de Valores)]:", errCalc.message);
-                throw new Error("Falha interna ao totalizar valores monetarios do turno.");
-            }
+                }
+            });
 
-            const fundoInicial = parseFloat(movimento.valor_abertura || 0);
+            const fundoInicial = parseFloat(movimento.valor_abertura || movimento.valorAbertura || 0);
             const saldoFinal = fundoInicial + totalEntradas - totalSaidas;
 
-            console.log("[BANCO] Resumo financeiro do turno consolidado com sucesso.");
             return {
                 movimentoId: movimento.id,
                 fundoInicial,
@@ -865,65 +818,36 @@ class DatabaseManager {
             };
 
         } catch (errGlobal) {
-            console.error("[ERRO CRITICO - obterResumoTurnoAtual FATAL]: Excecao nao tratada:", errGlobal.message);
+            console.error("[ERRO CRITICO - obterResumoTurnoAtual FATAL]:", errGlobal.message);
             return { status: 'erro', mensagem: errGlobal.message };
         }
     }
 
     async fecharCaixa(movimentoId, operadorFechamentoId, valorFechamento, valorContado, diferenca) {
         try {
-            console.log("[BANCO] Iniciando processo de fechamento de turno de caixa...");
-            
-            let dataAtual = null;
-            try {
-                dataAtual = obterDataHoraLocalANSI();
-            } catch (errParams) {
-                console.error("[ERRO - fecharCaixa (Obter Data Local)]:", errParams.message);
-                throw new Error("Falha interna ao gerar data de fechamento para o turno.");
-            }
+            console.log("[BANCO] Processando fechamento de turno via CaixaRepository...");
+            const dataAtual = obterDataHoraLocalANSI();
+
+            const payloadFechamento = { movimentoId, operadorFechamentoId, valorFechamento, valorContado, diferenca };
 
             if (this.isOnline) {
                 try {
-                    console.log("[POSTGRES] Atualizando status do turno para fechado no servidor remoto...");
-                    
-                    // Aplicados os casts explicitos ::timestamp e ::uuid para evitar incompatibilidades de tipo no Postgres
-                    const queryPG = `
-                        UPDATE movimentos_caixa 
-                        SET status = 'F', data_fechamento = $1::timestamp, operador_fechamento_id = $2::uuid, 
-                            valor_fechamento = $3, valor_contado = $4, diferenca = $5
-                        WHERE id = $6::uuid
-                    `;
-                    await this.pgClient.query(queryPG, [dataAtual, operadorFechamentoId, valorFechamento, valorContado, diferenca, movimentoId]);
-                    console.log("[BANCO] Turno de caixa encerrado com sucesso no PostgreSQL.");
+                    await this.caixas.atualizarFechamentoPostgres(payloadFechamento, dataAtual);
+                    console.log("[BANCO] Turno encerrado no PostgreSQL.");
                 } catch (err) { 
-                    console.error("[ERRO - fecharCaixa (Postgres Remote)]:", err.message);
+                    console.error("[ERRO - fecharCaixa Postgres]:", err.message);
                     this.isOnline = false; 
                 }
             }
 
-            const jaSincronizadoFec = this.isOnline ? 1 : 0; // Se fechou direto na nuvem, marca como sincronizado local
-
-            console.log("[BANCO] Atualizando status do turno na base local SQLite...");
-            return await new Promise((resolve, reject) => {
-                const queryLite = `
-                    UPDATE movimentos_caixa_locais 
-                    SET status = 'F', data_fechamento = ?, operador_fechamento_id = ?, 
-                        valor_fechamento = ?, valor_contado = ?, diferenca = ?, sincronizado = ?
-                    WHERE id = ?
-                `;
-                this.sqliteDb.run(queryLite, [dataAtual, operadorFechamentoId, valorFechamento, valorContado, diferenca, jaSincronizadoFec, movimentoId], (err) => {
-                    if (err) {
-                        console.error("[ERRO - fecharCaixa (Query SQLite)]:", err.message);
-                        reject(err);
-                    } else {
-                        console.log(`[BANCO] Turno de caixa fechado localmente com sucesso (Sincronizado: ${jaSincronizadoFec}).`);
-                        resolve({ status: 'sucesso' });
-                    }
-                });
-            });
+            const jaSincronizadoFec = this.isOnline ? 1 : 0;
+            await this.caixas.atualizarFechamentoSQLite(payloadFechamento, dataAtual, jaSincronizadoFec);
+            
+            console.log(`[BANCO] Turno de caixa fechado localmente (Sincronizado: ${jaSincronizadoFec}).`);
+            return { status: 'sucesso' };
 
         } catch (errGlobal) {
-            console.error("[ERRO CRITICO - fecharCaixa FATAL]: Excecao nao tratada na rotina de fechamento de turno:", errGlobal.message);
+            console.error("[ERRO CRITICO - fecharCaixa FATAL]:", errGlobal.message);
             return { status: 'erro', mensagem: errGlobal.message };
         }
     }
