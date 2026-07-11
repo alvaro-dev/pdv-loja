@@ -3,6 +3,7 @@ const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
 const { app } = require('electron');
 const crypto = require('crypto');
+const UsuarioRepository = require('./repositories/UsuarioRepository');
 
 // FUNCAO AUXILIAR: Gera data e hora local da máquina sem distorcao de fuso horario (UTC)
 function obterDataHoraLocalANSI(dataBase = new Date()) {
@@ -42,6 +43,9 @@ class DatabaseManager {
         this.tenantFilialId = null;
         this.escoposCache = {}; // 🌟 Cache global de escopos
 
+        // 🌟 INICIALIZAÇÃO DO REPOSITÓRIO PASSANDO ESTA INSTÂNCIA DO GERENCIADOR
+        this.usuarios = new UsuarioRepository(this);
+
         // No Windows, salva o arquivo .db na pasta AppData do usuário
         this.sqlitePath = path.join(app.getPath('userData'), 'pdv_local.db');
     }
@@ -60,195 +64,79 @@ class DatabaseManager {
 
     async realizarLogin(usuario, senha, caixaId) {
         try {
-            // HIGIENIZAÇÃO E CONVERSÃO ESTRITA
             const usuarioStr = String(usuario || '').trim();
             const senhaStr = String(senha || '').trim();
             const caixaIdStr = caixaId ? String(caixaId).trim() : null;
             
-            console.log("[DB-LOGIN] Entrando na verificacao do banco...");
+            console.log("[DB-LOGIN] Entrando na verificação via Repository...");
 
-            // Verifica se já é o hash de 64 caracteres ou texto puro
-            let senhaCriptografada = "";
-            try {
-                senhaCriptografada = (senhaStr.length === 64) 
-                    ? senhaStr 
-                    : this.gerarHashSenha(senhaStr);
-            } catch (errHash) {
-                console.error("[ERRO - realizarLogin (Geracao Hash)]: Falha ao processar a criptografia da senha:", errHash.message);
-                throw new Error("Falha interna de seguranca ao processar credenciais.");
-            }
+            const senhaCriptografada = (senhaStr.length === 64) 
+                ? senhaStr 
+                : this.usuarios.gerarHashSenha(senhaStr);
             
             let operador = null;
 
-            // 1. SE ESTIVER ONLINE, TENTA VALIDAR NO POSTGRESQL
+            // 1. Tenta autenticação Online
             if (this.isOnline) {
                 try {
-                    console.log("[DB-LOGIN] Buscando usuario no PostgreSQL externo...");
-                    const query = "SELECT id, usuario, nome, role, bloqueado, trocar_senha_prox_login FROM usuarios WHERE usuario = $1 AND senha = $2 AND usuario_pdv = 'S' AND deletado = false";
-                    const resultado = await this.pgClient.query(query, [usuarioStr, senhaCriptografada]);
-                    
-                    if (resultado.rows.length > 0) {
-                        operador = resultado.rows[0];
-                        console.log("[DB-LOGIN] Localizado no Postgres com sucesso.");
-                        
-                        // Sincroniza na base local de contingência de forma assíncrona
-                        this.sqliteDb.run(
-                            `INSERT INTO usuarios_locais (id, usuario, nome, senha, role, bloqueado, usuario_pdv, trocar_senha_prox_login) 
-                            VALUES (?, ?, ?, ?, ?, 'N', 'S', ?) 
-                            ON CONFLICT(usuario) DO UPDATE SET nome=?, senha=?, role=?, trocar_senha_prox_login=?`,
-                            [operador.id, operador.usuario, operador.nome, senhaCriptografada, operador.role, operador.trocar_senha_prox_login, operador.nome, senhaCriptografada, operador.role, operador.trocar_senha_prox_login],
-                            (errSync) => {
-                                if (errSync) {
-                                    console.error("[ERRO SINC - realizarLogin]: Falha ao espelhar operador no SQLite local:", errSync.message);
-                                }
-                            }
-                        );
-                    } else {
-                        console.log("[DB-LOGIN] Combinacao usuario/senha nao encontrada no Postgres.");
+                    operador = await this.usuarios.buscarNoPostgres(usuarioStr, senhaCriptografada);
+                    if (operador) {
+                        // Sincroniza o operador autenticado em background
+                        this.usuarios.espelharOperadorLocal(operador, senhaCriptografada).catch(err => {
+                            console.error("[ERRO SINC] Falha ao espelhar operador:", err.message);
+                        });
                     }
                 } catch (err) {
-                    console.error("[ERRO - realizarLogin (Postgres)]: Conexao perdida ou rejeitada pelo servidor remoto:", err.message);
+                    console.error("[ERRO - Postgres Login]: Remote off, usando contingência.", err.message);
                     this.isOnline = false;
                 }
             }
 
-            // 2. MODO OFFLINE DE CONTINGÊNCIA
+            // 2. Modo contingência offline
             if (!operador) {
-                try {
-                    console.log("[DB-LOGIN] Buscando usuario na base de contingencia SQLite...");
-                    operador = await new Promise((resolve, reject) => {
-                        const query = "SELECT id, usuario, nome, role, bloqueado FROM usuarios_locais WHERE usuario = ? AND senha = ? AND usuario_pdv = 'S' AND deletado = 0";
-                        this.sqliteDb.get(query, [usuarioStr, senhaCriptografada], (err, row) => {
-                            if (err) reject(err);
-                            else resolve(row || null);
-                        });
-                    });
-                } catch (errSqlite) {
-                    console.error("[ERRO - realizarLogin (SQLite)]: Erro critico ao consultar tabela usuarios_locais:", errSqlite.message);
-                    throw new Error("Base de dados local inacessivel.");
-                }
+                operador = await this.usuarios.buscarNoSQLite(usuarioStr, senhaCriptografada);
             }
 
-            if (!operador) {
-                console.log("[DB-LOGIN] Autenticacao recusada: Operador nao localizado nas bases.");
-                return null;
-            }
+            if (!operador) return null;
 
-            // =====================================================================
-            // EXCEÇÃO MASTER ANTECIPADA: Admins pulam qualquer trava de turno!
-            // =====================================================================
-            if (operador.role === 'admin' || operador.usuario === 'admin') {
-                console.log(`[LOGIN] Administrador master "${operador.nome}" autenticado com sucesso.`);
-                return operador;
-            }
+            // Admins ignoram travas de turno
+            if (operador.role === 'admin' || operador.usuario === 'admin') return operador;
 
-            // =====================================================================
-            // 3. TRAVA A: Verifica se o terminal atual pertence a outro operador
-            // =====================================================================
+            // 3. Trava A: Verifica propriedade do terminal
             if (caixaIdStr) {
                 let caixaDono = null;
-                
                 if (this.isOnline) {
                     try {
-                        console.log("[DB-LOGIN (TRAVA A)]: Verificando propriedade do caixa no Postgres...");
-                        const queryCaixa = `
-                            SELECT m.operador_abertura_id, o.nome AS dono_nome 
-                            FROM movimentos_caixa m
-                            JOIN usuarios o ON o.id = m.operador_abertura_id AND o.deletado = false
-                            WHERE m.caixa_id = $1::uuid AND m.status = 'A' AND m.deletado = false
-                            LIMIT 1
-                        `;
-                        const resCaixa = await this.pgClient.query(queryCaixa, [caixaIdStr]);
-                        if (resCaixa.rows.length > 0) {
-                            caixaDono = resCaixa.rows[0];
-                        }
-                    } catch (err) { 
-                        console.error("[ERRO - realizarLogin (Trava A Postgres)]:", err.message);
-                        this.isOnline = false; 
-                    }
+                        caixaDono = await this.usuarios.obterDonoTurnoAtivoPostgres(caixaIdStr);
+                    } catch (err) { this.isOnline = false; }
                 }
-
                 if (!this.isOnline) {
-                    try {
-                        console.log("[DB-LOGIN (TRAVA A)]: Verificando propriedade do caixa no SQLite local...");
-                        caixaDono = await new Promise((resolve, reject) => {
-                            this.sqliteDb.get(
-                                `SELECT m.operador_abertura_id, 'Outro Operador (Offline)' AS dono_nome 
-                                FROM movimentos_caixa_locais m 
-                                WHERE m.caixa_id = ? AND m.status = 'A' AND m.deletado = 0`,
-                                [caixaIdStr], (err, row) => {
-                                    if (err) reject(err);
-                                    else resolve(row || null);
-                                }
-                            );
-                        });
-                    } catch (errLiteCaixa) {
-                        console.error("[ERRO - realizarLogin (Trava A SQLite)]:", errLiteCaixa.message);
-                    }
+                    caixaDono = await this.usuarios.obterDonoTurnoAtivoSQLite(caixaIdStr);
                 }
 
                 if (caixaDono && caixaDono.operador_abertura_id !== operador.id) {
-                    console.log(`[DB-LOGIN (REJEITADO)]: Bloqueio de terminal ativo por outro operador: "${caixaDono.dono_nome}"`);
-                    throw new Error(`Este terminal ja possui um turno ativo do operador: "${caixaDono.dono_nome}". Finalize o turno atual antes de trocar de operador.`);
+                    throw new Error(`Este terminal já possui um turno ativo do operador: "${caixaDono.dono_nome}". Finalize o turno atual antes de trocar de operador.`);
                 }
             }
 
-            // =====================================================================
-            // 4. TRAVA B: Verifica se este operador comum já tem outro caixa aberto
-            // =====================================================================
+            // 4. Trava B: Verifica duplicidade de turno ativo em outros caixas
             let turnoAtivo = null;
             if (this.isOnline) {
                 try {
-                    console.log("[DB-LOGIN (TRAVA B)]: Verificando duplicidade de turno ativo no Postgres...");
-                    const queryTrava = `
-                        SELECT m.id, c.descricao AS caixa_nome, c.id AS cod_caixa
-                        FROM movimentos_caixa m
-                        JOIN caixas c ON c.id = m.caixa_id AND c.deletado = false
-                        WHERE m.operador_abertura_id = $1 AND m.status = 'A' AND m.deletado = false
-                        LIMIT 1
-                    `;
-                    const resTrava = await this.pgClient.query(queryTrava, [operador.id]);
-                    if (resTrava.rows.length > 0) {
-                        turnoAtivo = resTrava.rows[0];
-                    }
-                } catch (err) { 
-                    console.error("[ERRO - realizarLogin (Trava B Postgres)]:", err.message);
-                    this.isOnline = false; 
-                }
+                    turnoAtivo = await this.usuarios.obterCaixaAbertoPorOperadorPostgres(operador.id);
+                } catch (err) { this.isOnline = false; }
             }
-
             if (!this.isOnline) {
-                try {
-                    console.log("[DB-LOGIN (TRAVA B)]: Verificando duplicidade de turno ativo no SQLite local...");
-                    turnoAtivo = await new Promise((resolve, reject) => {
-                        this.sqliteDb.get(
-                            `SELECT m.id, 'outro terminal (Offline)' AS caixa_nome, c.id AS cod_caixa 
-                            FROM movimentos_caixa_locais m 
-                            JOIN caixas_locais c ON c.id = m.caixa_id AND c.deletado = 0
-                            WHERE m.operador_abertura_id = ? AND m.status = 'A' AND m.deletado = 0`,
-                            [operador.id], (err, row) => {
-                                if (err) reject(err);
-                                else resolve(row || null);
-                            }
-                        );
-                    });
-                } catch (errLiteTurno) {
-                    console.error("[ERRO - realizarLogin (Trava B SQLite)]:", errLiteTurno.message);
-                }
+                turnoAtivo = await this.usuarios.obterCaixaAbertoPorOperadorSQLite(operador.id);
             }
 
-            if (turnoAtivo) {
-                if (String(turnoAtivo.cod_caixa).trim() !== caixaIdStr) {
-                    console.log(`[DB-LOGIN (REJEITADO)]: Operador ja possui sessao ativa no terminal: "${turnoAtivo.caixa_nome}"`);
-                    throw new Error(`Este operador ja possui um turno aberto no terminal: "${turnoAtivo.caixa_nome}". Encerre a outra sessao antes.`);
-                }
+            if (turnoAtivo && String(turnoAtivo.cod_caixa).trim() !== caixaIdStr) {
+                throw new Error(`Este operador já possui um turno aberto no terminal: "${turnoAtivo.caixa_nome}". Encerre a outra sessão antes.`);
             }
 
-            console.log(`[DB-LOGIN (SUCESSO)]: Sessao autorizada para o operador comum "${operador.nome}".`);
             return operador;
-
         } catch (errGlobal) {
-            console.error("[ERRO CRITICO - realizarLogin FATAL]: Excecao nao tratada disparada no fluxo de faturamento:", errGlobal.message);
+            console.error("[ERRO CRITICO - realizarLogin]:", errGlobal.message);
             throw errGlobal;
         }
     }
@@ -536,121 +424,25 @@ class DatabaseManager {
     }
 
     async sincronizarOperadores() {
-        if (!this.pgClient) {
-            console.log("[SYNC] Abortado: Sem cliente principal PostgreSQL configurado.");
-            return { status: 'offline' };
-        }
-
-        let pgTemp = null;
-        try {
-            // Inicializa o cliente temporário isolado clonando as propriedades do principal
-            pgTemp = new (require('pg').Client)({
-                host: this.pgClient.connectionParameters?.host || this.pgClient.options?.host,
-                database: this.pgClient.connectionParameters?.database || this.pgClient.options?.database,
-                user: this.pgClient.connectionParameters?.user || this.pgClient.options?.user,
-                password: this.pgClient.connectionParameters?.password || this.pgClient.options?.password,
-                port: parseInt(this.pgClient.connectionParameters?.port || this.pgClient.options?.port) || 5432,
-                connectionTimeoutMillis: 3000
-            });
-        } catch (errClient) {
-            console.error("[ERRO - sincronizarOperadores (Instanciar pgTemp)]:", errClient.message);
-            return { status: 'erro', mensagem: errClient.message };
-        }
+        if (!this.pgClient) return { status: 'offline' };
         
         try {
-            console.log("[SYNC] Estabelecendo conexao temporaria para lote de operadores...");
-            await pgTemp.connect();
-            
             if (!this.tenantEmpresaId || !this.tenantFilialId) {
-                console.log("[SYNC] Interrompido: Identificadores de governanca corporativa ausentes.");
-                return { status: 'erro', mensagem: 'IDs de governanca ausentes no boot.' };
+                return { status: 'erro', mensagem: 'IDs de governança ausentes no boot.' };
             }
 
-            let ultimaAtualizacao = '1970-01-01 00:00:00';
-            try {
-                ultimaAtualizacao = await new Promise((resolve, reject) => {
-                    this.sqliteDb.get(`SELECT COALESCE(MAX(data_alteracao), '1970-01-01 00:00:00') as ultima FROM usuarios_locais`, (err, row) => {
-                        if (err) reject(err);
-                        else resolve(row ? row.ultima : '1970-01-01 00:00:00');
-                    });
-                });
-            } catch (errLiteGet) {
-                console.error("[ERRO - sincronizarOperadores (Consultar MAX data_alteracao SQLite)]:", errLiteGet.message);
-                throw errLiteGet;
-            }
-
-            console.log(`[SYNC-INCREMENTAL] Buscando operadores modificados no Postgres apos: ${ultimaAtualizacao}`);
+            const ultimaAtualizacao = await this.usuarios.obterUltimaAtualizacaoLocal();
+            console.log(`[SYNC-OPERADORES] Executando busca incremental pós: ${ultimaAtualizacao}`);
             
-            const queryPG = `
-                SELECT DISTINCT
-                    u.id, u.usuario, u.nome, u.senha, u.role, u.bloqueado, 
-                    u.usuario_pdv, u.trocar_senha_prox_login,
-                    TO_CHAR(u.data_alteracao, 'YYYY-MM-DD HH24:MI:SS') as data_alteracao
-                FROM usuarios u
-                JOIN usuarios_acessos a ON a.usuario_id = u.id
-                WHERE u.usuario_pdv = 'S' 
-                AND u.deletado = false
-                AND a.empresa_id = $1 
-                AND a.filial_id = $2
-                AND DATE_TRUNC('second', u.data_alteracao) > $3::timestamp
-            `;
-            
-            const resultado = await pgTemp.query(queryPG, [this.tenantEmpresaId, this.tenantFilialId, ultimaAtualizacao]);
-            const operadoresNovos = resultado.rows;
+            const operadoresNovos = await this.usuarios.buscarModificadosPostgres(this.tenantEmpresaId, this.tenantFilialId, ultimaAtualizacao);
 
-            if (operadoresNovos.length === 0) {
-                console.log("[SYNC-INCREMENTAL] Base de operadores locais ja esta 100% atualizada.");
-                return { status: 'sucesso', total: 0 };
-            }
+            if (operadoresNovos.length === 0) return { status: 'sucesso', total: 0 };
 
-            console.log(`[SYNC-INCREMENTAL] Injetando ${operadoresNovos.length} atualizacoes de operadores no SQLite...`);
-
-            try {
-                return await new Promise((resolve, reject) => {
-                    this.sqliteDb.serialize(() => {
-                        this.sqliteDb.run("BEGIN TRANSACTION");
-
-                        const stmt = this.sqliteDb.prepare(`
-                            INSERT INTO usuarios_locais (id, usuario, nome, senha, role, bloqueado, usuario_pdv, trocar_senha_prox_login, data_alteracao)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                            ON CONFLICT(usuario) DO UPDATE SET 
-                                id = excluded.id, nome = excluded.nome, senha = excluded.senha, role = excluded.role, 
-                                bloqueado = excluded.bloqueado, usuario_pdv = excluded.usuario_pdv, 
-                                trocar_senha_prox_login = excluded.trocar_senha_prox_login, data_alteracao = excluded.data_alteracao
-                        `);
-
-                        for (const op of operadoresNovos) {
-                            stmt.run([op.id, op.usuario, op.nome, op.senha, op.role, op.bloqueado, op.usuario_pdv, op.trocar_senha_prox_login, op.data_alteracao]);
-                        }
-
-                        stmt.finalize();
-                        this.sqliteDb.run("COMMIT", (err) => {
-                            if (err) {
-                                reject(err);
-                            } else {
-                                console.log(`[SYNC-INCREMENTAL] Lote de ${operadoresNovos.length} operadores processado e comitado localmente.`);
-                                resolve({ status: 'sucesso', total: operadoresNovos.length });
-                            }
-                        });
-                    });
-                });
-            } catch (errLiteSave) {
-                console.error("[ERRO - sincronizarOperadores (Gravar transacao SQLite)]:", errLiteSave.message);
-                throw errLiteSave;
-            }
-
+            await this.usuarios.salvarLoteLocal(operadoresNovos);
+            return { status: 'sucesso', total: operadoresNovos.length };
         } catch (error) {
-            console.error("[SYNC] Erro no lote incremental de operadores:", error.message);
+            console.error("[SYNC] Erro no lote de operadores:", error.message);
             return { status: 'erro', mensagem: error.message };
-        } finally {
-            if (pgTemp) {
-                try {
-                    console.log("[SYNC] Encerrando conexao temporaria de operadores...");
-                    await pgTemp.end();
-                } catch (errEnd) {
-                    console.error("[ERRO - sincronizarOperadores (Destruir pgTemp end)]:", errEnd.message);
-                }
-            }
         }
     }
 
