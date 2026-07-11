@@ -62,34 +62,21 @@ class VendaService {
             const tetoCadastrado = parseFloat(dadosCliente.limite_credito || 0);
             let totalDebitosAtuais = 0;
 
-            // Checagem em tempo real dependendo do estado da rede (Híbrido)
+            // Checagem em tempo real dependendo do estado da rede (Híbrido via Repository)
             if (db.isOnline) {
                 try {
-                    const querySaldoGlobal = `
-                        SELECT COALESCE(SUM(saldo_restante), 0) as total_devido 
-                        FROM contas_a_receber 
-                        WHERE cliente_id = $1::uuid AND status = 'P' AND deletado = false
-                    `;
-                    const resSaldoGlobal = await db.pgClient.query(querySaldoGlobal, [clienteId]);
-                    totalDebitosAtuais = parseFloat(resSaldoGlobal.rows[0].total_devido || 0);
+                    // 🌟 MODIFICADO PARA USAR O REPOSITÓRIO DE CLIENTES
+                    totalDebitosAtuais = await db.clientes.obterSaldoDevedorPostgres(clienteId);
                 } catch (errPg) {
                     console.error("[VendaService] Falha ao consultar débitos online. Recuando para consulta local:", errPg.message);
-                    db.isOnline = false; // Altera o estado de rede preventivamente
+                    db.isOnline = false; 
                 }
             }
 
             if (!db.isOnline) {
                 try {
-                    totalDebitosAtuais = await new Promise((resolve, reject) => {
-                        db.sqliteDb.get(
-                            `SELECT COALESCE(SUM(valor_original), 0) as total_devido FROM contas_a_receber_locais WHERE cliente_id = ? AND status = 'P' AND deletado = 0`,
-                            [clienteId],
-                            (err, row) => {
-                                if (err) reject(err);
-                                else resolve(row ? (row.total_devido || 0) : 0);
-                            }
-                        );
-                    });
+                    // 🌟 MODIFICADO PARA USAR O REPOSITÓRIO DE CLIENTES
+                    totalDebitosAtuais = await db.clientes.obterSaldoDevedorSQLite(clienteId);
                 } catch (errLite) {
                     console.error("[VendaService] Erro ao buscar saldo devedor local:", errLite.message);
                 }

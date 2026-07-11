@@ -4,6 +4,7 @@ const path = require('path');
 const { app } = require('electron');
 const crypto = require('crypto');
 const UsuarioRepository = require('./repositories/UsuarioRepository');
+const ClienteRepository = require('./repositories/ClienteRepository');
 
 // FUNCAO AUXILIAR: Gera data e hora local da máquina sem distorcao de fuso horario (UTC)
 function obterDataHoraLocalANSI(dataBase = new Date()) {
@@ -45,6 +46,7 @@ class DatabaseManager {
 
         // 🌟 INICIALIZAÇÃO DO REPOSITÓRIO PASSANDO ESTA INSTÂNCIA DO GERENCIADOR
         this.usuarios = new UsuarioRepository(this);
+        this.clientes = new ClienteRepository(this);
 
         // No Windows, salva o arquivo .db na pasta AppData do usuário
         this.sqlitePath = path.join(app.getPath('userData'), 'pdv_local.db');
@@ -447,160 +449,45 @@ class DatabaseManager {
     }
 
     async sincronizarClientes() {
-        if (!this.pgClient) {
-            console.log("[SYNC-CLIENTES] Abortado: Sem cliente principal PostgreSQL configurado.");
-            return { status: 'offline' };
-        }
-
-        let pgTemp = null;
-        try {
-            // Inicializa o cliente temporário isolado clonando as propriedades do principal
-            pgTemp = new (require('pg').Client)({
-                host: this.pgClient.connectionParameters?.host || this.pgClient.options?.host,
-                database: this.pgClient.connectionParameters?.database || this.pgClient.options?.database,
-                user: this.pgClient.connectionParameters?.user || this.pgClient.options?.user,
-                password: this.pgClient.connectionParameters?.password || this.pgClient.options?.password,
-                port: parseInt(this.pgClient.connectionParameters?.port || this.pgClient.options?.port) || 5432,
-                connectionTimeoutMillis: 3000
-            });
-        } catch (errClient) {
-            console.error("[ERRO - sincronizarClientes (Instanciar pgTemp)]:", errClient.message);
-            return { status: 'erro', mensagem: errClient.message };
-        }
+        if (!this.pgClient) return { status: 'offline' };
 
         try {
-            console.log("[SYNC-CLIENTES] Estabelecendo conexao temporaria para lote de clientes...");
-            await pgTemp.connect();
-            
+            if (!this.tenantEmpresaId) {
+                return { status: 'erro', mensagem: 'IDs de governança ausentes no boot.' };
+            }
+
             const escopoAtual = this.obterEscopoTabela('clientes');
+            const ultimaAtualizacao = await this.clientes.obterUltimaAtualizacaoLocal();
 
-            let ultimaAtualizacaoClientes = '1970-01-01 00:00:00';
-            try {
-                ultimaAtualizacaoClientes = await new Promise((resolve, reject) => {
-                    this.sqliteDb.get(`SELECT COALESCE(MAX(data_alteracao), '1970-01-01 00:00:00') as ultima FROM clientes_locais`, (err, row) => {
-                        if (err) reject(err);
-                        else resolve(row ? row.ultima : '1970-01-01 00:00:00');
-                    });
-                });
-            } catch (errLiteGet) {
-                console.error("[ERRO - sincronizarClientes (Consultar MAX data_alteracao SQLite)]:", errLiteGet.message);
-                throw errLiteGet;
-            }
+            console.log(`[SYNC-CLIENTES] Verificando novos clientes pós: ${ultimaAtualizacao} | Escopo: ${escopoAtual}`);
 
-            console.log(`[SYNC-CLIENTES-INCREMENTAL] Verificando novos clientes apos: ${ultimaAtualizacaoClientes} | Escopo: ${escopoAtual}`);
+            const clientesNovos = await this.clientes.buscarModificadosPostgres(
+                this.tenantEmpresaId, 
+                this.tenantFilialId, 
+                ultimaAtualizacao, 
+                escopoAtual
+            );
 
-            let queryPG = "";
-            let parametrosPG = [];
+            if (clientesNovos.length === 0) return { status: 'sucesso', total: 0 };
 
-            if (escopoAtual === 'COMPARTILHADO') {
-                queryPG = `
-                    SELECT 
-                        c.id, c.empresa_id, c.filial_id, c.nome, c.cpf, c.bloqueado,
-                        TO_CHAR(c.data_alteracao, 'YYYY-MM-DD HH24:MI:SS') as data_alteracao,
-                        (COALESCE(c.limite_credito, 0) - COALESCE((SELECT SUM(saldo_restante) FROM contas_a_receber WHERE cliente_id = c.id AND status = 'P' AND deletado = false), 0)) as limite_restante
-                    FROM clientes c
-                    WHERE c.empresa_id = $1 AND c.filial_id IS NULL AND c.deletado = false AND DATE_TRUNC('second', c.data_alteracao) > $2::timestamp
-                `;
-                parametrosPG = [this.tenantEmpresaId, ultimaAtualizacaoClientes];
-            } else {
-                queryPG = `
-                    SELECT 
-                        c.id, c.empresa_id, c.filial_id, c.nome, c.cpf, c.bloqueado,
-                        TO_CHAR(c.data_alteracao, 'YYYY-MM-DD HH24:MI:SS') as data_alteracao,
-                        (COALESCE(c.limite_credito, 0) - COALESCE((SELECT SUM(saldo_restante) FROM contas_a_receber WHERE cliente_id = c.id AND status = 'P' AND deletado = false), 0)) as limite_restante
-                    FROM clientes c
-                    WHERE c.empresa_id = $1 AND c.filial_id = $2 AND c.deletado = false AND DATE_TRUNC('second', c.data_alteracao) > $3::timestamp
-                `;
-                parametrosPG = [this.tenantEmpresaId, this.tenantFilialId, ultimaAtualizacaoClientes];
-            }
-
-            const resultado = await pgTemp.query(queryPG, parametrosPG);
-            const clientesNovos = resultado.rows;
-
-            if (clientesNovos.length === 0) {
-                console.log("[SYNC-CLIENTES-INCREMENTAL] Base de clientes locais ja esta 100% atualizada.");
-                return { status: 'sucesso', total: 0 };
-            }
-
-            console.log(`[SYNC-CLIENTES-INCREMENTAL] Salvando ${clientesNovos.length} novos registros modificados no SQLite...`);
-
-            try {
-                return await new Promise((resolve, reject) => {
-                    this.sqliteDb.serialize(() => {
-                        this.sqliteDb.run("BEGIN TRANSACTION");
-
-                        const stmt = this.sqliteDb.prepare(`
-                            INSERT INTO clientes_locais (id, empresa_id, filial_id, nome, cpf, limite_credito, bloqueado, deletado, data_alteracao)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)
-                            ON CONFLICT(id) DO UPDATE SET 
-                                nome = excluded.nome, cpf = excluded.cpf, limite_credito = excluded.limite_credito, 
-                                bloqueado = excluded.bloqueado, filial_id = excluded.filial_id, data_alteracao = excluded.data_alteracao
-                        `);
-
-                        for (const cli of clientesNovos) {
-                            const saldoDisponivel = parseFloat(cli.limite_restante || 0);
-                            stmt.run([cli.id, cli.empresa_id, cli.filial_id, cli.nome, cli.cpf, saldoDisponivel, cli.bloqueado, cli.data_alteracao]);
-                        }
-
-                        stmt.finalize();
-                        this.sqliteDb.run("COMMIT", (err) => {
-                            if (err) {
-                                reject(err);
-                            } else {
-                                console.log(`[SYNC-CLIENTES-INCREMENTAL] Lote de ${clientesNovos.length} clientes gravado e comitado localmente.`);
-                                resolve({ status: 'sucesso', total: clientesNovos.length });
-                            }
-                        });
-                    });
-                });
-            } catch (errLiteSave) {
-                console.error("[ERRO - sincronizarClientes (Gravar transacao SQLite)]:", errLiteSave.message);
-                throw errLiteSave;
-            }
+            console.log(`[SYNC-CLIENTES] Salvando ${clientesNovos.length} novos registros modificados no SQLite...`);
+            await this.clientes.salvarLoteLocal(clientesNovos);
+            
+            return { status: 'sucesso', total: clientesNovos.length };
 
         } catch (error) {
             console.error("[SYNC-CLIENTES] Erro fatal no lote incremental:", error.message);
             return { status: 'erro', mensagem: error.message };
-        } finally {
-            if (pgTemp) {
-                try {
-                    console.log("[SYNC-CLIENTES] Encerrando conexao temporaria de clientes...");
-                    await pgTemp.end();
-                } catch (errEnd) {
-                    console.error("[ERRO - sincronizarClientes (Destruir pgTemp end)]:", errEnd.message);
-                }
-            }
         }
     }
 
-    // Método auxiliar para buscar/filtrar os clientes locais na hora da venda (via autocomplete)
     async buscarClientesLocais(termoBusca) {
         try {
-            console.log("[BANCO] Iniciando busca automatica de clientes locais...");
-
-            return await new Promise((resolve, reject) => {
-                const termo = `%${String(termoBusca || '').trim()}%`;
-                const query = `
-                    SELECT id, nome, cpf, limite_credito, bloqueado 
-                    FROM clientes_locais 
-                    WHERE (nome LIKE ? OR cpf LIKE ?) AND deletado = 0
-                    LIMIT 10
-                `;
-
-                this.sqliteDb.all(query, [termo, termo], (err, rows) => {
-                    if (err) {
-                        console.error("[ERRO - buscarClientesLocais (Query SQLite)]:", err.message);
-                        // Retorna um array vazio em caso de erro na consulta para nao travar o componente de autocomplete do front-end
-                        resolve([]);
-                    } else {
-                        console.log(`[BANCO] Busca concluida. Encontrados ${rows ? rows.length : 0} clientes locais.`);
-                        resolve(rows || []);
-                    }
-                });
-            });
-
+            console.log("[BANCO] Buscando clientes via ClienteRepository...");
+            const termo = `%${String(termoBusca || '').trim()}%`;
+            return await this.clientes.buscarLocaisPorTermo(termo);
         } catch (errGlobal) {
-            console.error("[ERRO CRITICO - buscarClientesLocais FATAL]: Excecao nao tratada no fluxo de listagem:", errGlobal.message);
+            console.error("[ERRO CRITICO - buscarClientesLocais]:", errGlobal.message);
             return [];
         }
     }
