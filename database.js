@@ -853,88 +853,44 @@ class DatabaseManager {
 
     async listarVendasTurnoAtual(caixaId) {
         try {
-            console.log("[BANCO] Iniciando listagem de vendas do turno atual...");
+            console.log("[BANCO] Solicitando listagem do grid de faturamento ao VendaRepository...");
             let movimento = null;
 
+            // Reutiliza a busca de movimento ativo que encapsulamos no CaixaRepository
             if (this.isOnline) {
                 try {
-                    console.log("[POSTGRES] Buscando data de abertura do turno ativo...");
-                    // Cast apenas no parametro string $1 para a coluna UUID do caixa
-                    const res = await this.pgClient.query(`SELECT data_abertura FROM movimentos_caixa WHERE caixa_id = $1::uuid AND status = 'A' AND deletado = false LIMIT 1`, [caixaId]);
-                    if (res.rows.length > 0) {
-                        movimento = res.rows[0];
-                    }
+                    movimento = await this.caixas.obterMovimentoAtivoPostgres(caixaId);
                 } catch (err) { 
-                    console.error("[ERRO CRITICO POSTGRES - BUSCAR ABERTURA TURNO]:", err.message);
+                    console.error("[ERRO - listarVendasTurnoAtual Abertura Postgres]:", err.message);
                     this.isOnline = false; 
                 }
             }
 
             if (!movimento) {
-                try {
-                    console.log("[BANCO] Buscando data de abertura do turno ativo no SQLite local...");
-                    movimento = await new Promise((resolve, reject) => {
-                        this.sqliteDb.get(`SELECT data_abertura FROM movimentos_caixa_locais WHERE caixa_id = ? AND status = 'A'  AND deletado = 0`, [caixaId], (err, row) => {
-                            if (err) reject(err);
-                            else resolve(row || null);
-                        });
-                    });
-                } catch (errLiteMov) {
-                    console.error("[ERRO - listarVendasTurnoAtual (Buscar Turno SQLite)]:", errLiteMov.message);
-                }
+                movimento = await this.caixas.obterMovimentoAtivoSQLite(caixaId);
             }
 
             if (!movimento) {
-                console.log("[BANCO] Nenhuma venda listada: Turno aberto nao localizado para este caixa.");
+                console.log("[BANCO] Listagem cancelada: Nenhum turno aberto localizado.");
                 return [];
             }
 
+            const dataAberturaTurno = movimento.data_abertura || movimento.dataAbertura;
+
+            // Busca os lançamentos do grid através do repositório especialista de Vendas
             if (this.isOnline) {
                 try {
-                    console.log("[POSTGRES] Consultando historico de vendas do turno no servidor remoto...");
-                    // QUERY LIMPA: Como cliente_id agora e UUID no Postgres, o JOIN com c.id funciona direto!
-                    const queryPostgresTurno = `
-                        SELECT 
-                            v.id, v.origem, v.total, v.forma_pagamento, v.descricao_movimento, v.bandeira, v.parcelas, 
-                            COALESCE(c.nome, 'CONSUMIDOR FINAL') as cliente_nome 
-                        FROM vendas v 
-                        LEFT JOIN clientes c ON c.id = v.cliente_id 
-                        WHERE v.caixa_id = $1::uuid 
-                        AND v.data_venda >= $2::timestamp 
-                        AND v.deletado = false 
-                        ORDER BY v.data_venda DESC
-                    `;
-                    const res = await this.pgClient.query(queryPostgresTurno, [caixaId, movimento.data_abertura]);
-                    return res.rows;
+                    return await this.vendas.listarVendasTurnoPostgres(caixaId, dataAberturaTurno);
                 } catch (err) { 
-                    console.error("[ERRO CRITICO POSTGRES - LISTAR VENDAS TURNO]:", err.message);
+                    console.error("[ERRO - listarVendasTurnoPostgres]:", err.message);
                     this.isOnline = false; 
                 }
             }
             
-            console.log("[BANCO] Consultando historico de vendas do turno no SQLite local...");
-            return await new Promise((resolve) => {
-                this.sqliteDb.all(`
-                    SELECT 
-                        v.id, v.origem, v.total, v.forma_pagamento, v.descricao_movimento, v.bandeira, v.parcelas, 
-                        COALESCE(c.nome, 'CONSUMIDOR FINAL') as cliente_nome 
-                    FROM vendas_locais v 
-                    LEFT JOIN clientes_locais c ON c.id = v.cliente_id 
-                    WHERE v.caixa_id = ? AND v.data_venda >= ? AND v.deletado = 0 
-                    ORDER BY v.data_venda DESC
-                `, [caixaId, movimento.data_abertura], (err, rows) => {
-                    if (err) {
-                        console.error("[ERRO - listarVendasTurnoAtual (Listar Vendas SQLite)]:", err.message);
-                        resolve([]);
-                    } else {
-                        console.log(`[BANCO] Listagem local concluida. ${rows ? rows.length : 0} registros retornados.`);
-                        resolve(rows || []);
-                    }
-                });
-            });
+            return await this.vendas.listarVendasTurnoSQLite(caixaId, dataAberturaTurno);
 
         } catch (errGlobal) {
-            console.error("[ERRO CRITICO - listarVendasTurnoAtual FATAL]: Excecao nao tratada na listagem do grid:", errGlobal.message);
+            console.error("[ERRO CRITICO - listarVendasTurnoAtual FATAL]:", errGlobal.message);
             return [];
         }
     }

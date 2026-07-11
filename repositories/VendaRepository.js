@@ -207,6 +207,50 @@ class VendaRepository {
             });
         });
     }
+
+    /**
+     * Consulta o histórico de lançamentos do turno ativo no PostgreSQL central
+     */
+    async listarVendasTurnoPostgres(caixaId, dataAbertura) {
+        const query = `
+            SELECT 
+                v.id, v.origem, v.total, v.forma_pagamento, v.descricao_movimento, v.bandeira, v.parcelas, 
+                COALESCE(c.nome, 'CONSUMIDOR FINAL') as cliente_nome 
+            FROM vendas v 
+            LEFT JOIN clientes c ON c.id = v.cliente_id 
+            WHERE v.caixa_id = $1::uuid 
+            AND v.data_venda >= $2::timestamp 
+            AND v.deletado = false 
+            ORDER BY v.data_venda DESC
+        `;
+        const res = await this.db.pgClient.query(query, [caixaId, dataAbertura]);
+        return res.rows;
+    }
+
+    /**
+     * Consulta o histórico de lançamentos do turno ativo no SQLite local (Contingência)
+     */
+    async listarVendasTurnoSQLite(caixaId, dataAbertura) {
+        return new Promise((resolve) => {
+            const query = `
+                SELECT 
+                    v.id, v.origem, v.total, v.forma_pagamento, v.descricao_movimento, v.bandeira, v.parcelas, 
+                    COALESCE(c.nome, 'CONSUMIDOR FINAL') as cliente_nome 
+                FROM vendas_locais v 
+                LEFT JOIN clientes_locais c ON c.id = v.cliente_id 
+                WHERE v.caixa_id = ? AND v.data_venda >= ? AND v.deletado = 0 
+                ORDER BY v.data_venda DESC
+            `;
+            this.db.sqliteDb.all(query, [caixaId, dataAbertura], (err, rows) => {
+                if (err) {
+                    console.error("[VendaRepository] Erro ao listar vendas localmente:", err.message);
+                    resolve([]);
+                } else {
+                    resolve(rows || []);
+                }
+            });
+        });
+    }
 }
 
 module.exports = VendaRepository;
