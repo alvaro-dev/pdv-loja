@@ -5,6 +5,7 @@ const { app } = require('electron');
 const crypto = require('crypto');
 const UsuarioRepository = require('./repositories/UsuarioRepository');
 const ClienteRepository = require('./repositories/ClienteRepository');
+const VendaRepository = require('./repositories/VendaRepository');
 
 // FUNCAO AUXILIAR: Gera data e hora local da máquina sem distorcao de fuso horario (UTC)
 function obterDataHoraLocalANSI(dataBase = new Date()) {
@@ -47,6 +48,7 @@ class DatabaseManager {
         // 🌟 INICIALIZAÇÃO DO REPOSITÓRIO PASSANDO ESTA INSTÂNCIA DO GERENCIADOR
         this.usuarios = new UsuarioRepository(this);
         this.clientes = new ClienteRepository(this);
+        this.vendas = new VendaRepository(this);
 
         // No Windows, salva o arquivo .db na pasta AppData do usuário
         this.sqlitePath = path.join(app.getPath('userData'), 'pdv_local.db');
@@ -329,7 +331,6 @@ class DatabaseManager {
             )
         `);
         
-        // 2. Cria a tabela de caixas locais (Controle do Terminal)
         // 2. Cria a tabela de caixas locais (Controle do Terminal com Tenant)
         this.sqliteDb.run(`
             CREATE TABLE IF NOT EXISTS caixas_locais (
@@ -608,148 +609,103 @@ class DatabaseManager {
 
     async registrarVenda(caixaId, operadorId, total, formaPagamento, origem, descricaoMovimento, bandeira = null, parcelas = 1, clienteId = '00000000-0000-0000-0000-000000000000') {
         try {
-            console.log("[BANCO] Iniciando gravação direta dos dados validados da venda...");
+            console.log("[BANCO] Processando persistência via VendaRepository...");
             
-            let idVenda = crypto.randomUUID();
+            const idVenda = crypto.randomUUID();
             const dataAtual = obterDataHoraLocalANSI();
 
-            // CAPTURA DOS IDS GLOBAIS DE GOVERNANÇA EM MEMÓRIA
             const empIdGlobal = this.tenantEmpresaId;
             const filIdGlobal = this.tenantFilialId;
 
-            // 1. PERSISTÊNCIA DO CABEÇALHO DA VENDA NO SQLITE LOCAL
-            try {
-                await new Promise((resolve, reject) => {
-                    const queryLite = `
-                        INSERT INTO vendas_locais (id, caixa_id, operador_id, cliente_id, forma_pagamento, origem, total, descricao_movimento, data_venda, sincronizado, deletado, bandeira, parcelas) 
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)
-                    `;
-                    this.sqliteDb.run(
-                        queryLite, 
-                        [idVenda, caixaId, operadorId, clienteId, formaPagamento, origem, total, descricaoMovimento, dataAtual, bandeira, parcelas], 
-                        (err) => { if (err) reject(err); else resolve(); }
-                    );
-                });
-            } catch (errSaleLite) {
-                console.error("[ERRO CRITICO - registrarVenda (SQLite)]:", errSaleLite.message);
-                throw new Error("Não foi possível registrar o cabeçalho da venda localmente.");
-            }
+            // 1. Salva o cabeçalho da venda pai localmente
+            const payloadVenda = { id: idVenda, caixaId, operadorId, clienteId, formaPagamento, origem, total, descricaoMovimento, dataVenda: dataAtual, bandeira, parcelas };
+            await this.vendas.inserirVendaPaiSQLite(payloadVenda);
 
-            // 2. DESMEMBRAMENTO DE PARCELAS DE CREDIÁRIO (CR) NO SQLITE
+            // 2. Desmembra parcelas de Crediário localmente
             if (formaPagamento === 'CR' && total > 0) {
-                try {
-                    const valorPorParcela = total / parcelas;
-                    for (let i = 1; i <= parcelas; i++) {
-                        const idConta = crypto.randomUUID();
-                        const dataVencimento = new Date();
-                        dataVencimento.setDate(dataVencimento.getDate() + (30 * i));
-                        const dataVencimentoStr = obterDataHoraLocalANSI(dataVencimento).split(' ')[0];
-
-                        await new Promise((resolve, reject) => {
-                            const queryCRLite = `
-                                INSERT INTO contas_a_receber_locais (id, venda_id, cliente_id, data_vencimento, valor_original, status, sincronizado, deletado)
-                                VALUES (?, ?, ?, ?, ?, 'P', 0, 0)
-                            `;
-                            this.sqliteDb.run(queryCRLite, [idConta, idVenda, clienteId, dataVencimentoStr, valorPorParcela], (err) => {
-                                if (err) reject(err); else resolve();
-                            });
-                        });
-                    }
-                } catch (errCRLite) {
-                    console.error("[ERRO CRITICO - registrarVenda (Desmembrar CR SQLite)]:", errCRLite.message);
-                    throw new Error("Falha interna ao desmembrar parcelas de crediário local.");
+                const valorPorParcela = total / parcelas;
+                for (let i = 1; i <= parcelas; i++) {
+                    const dataVencimento = new Date();
+                    dataVencimento.setDate(dataVencimento.getDate() + (30 * i));
+                    
+                    await this.vendas.inserirParcelaCrediarioSQLite({
+                        id: crypto.randomUUID(),
+                        vendaId: idVenda,
+                        clienteId,
+                        dataVencimento: obterDataHoraLocalANSI(dataVencimento).split(' ')[0],
+                        valorOriginal: valorPorParcela
+                    });
                 }
             }
 
-            // 3. DESMEMBRAMENTO DE PARCELAS DE CARTÃO (CC) NO SQLITE LOCAL
+            // 3. Desmembra parcelas de Cartão localmente
             if (formaPagamento === 'CC' && total > 0) {
-                try {
-                    const valorPorParcela = total / parcelas;
-                    for (let i = 1; i <= parcelas; i++) {
-                        const idRecebivel = crypto.randomUUID();
-                        const dataPrevista = new Date();
-                        dataPrevista.setDate(dataPrevista.getDate() + (30 * i));
-                        const dataPrevistaStr = obterDataHoraLocalANSI(dataPrevista);
+                const valorPorParcela = total / parcelas;
+                for (let i = 1; i <= parcelas; i++) {
+                    const dataPrevista = new Date();
+                    dataPrevista.setDate(dataPrevista.getDate() + (30 * i));
 
-                        await new Promise((resolve, reject) => {
-                            this.sqliteDb.run(`
-                                INSERT INTO recebiveis_cartao_locais (id, venda_id, caixa_id, parcela_numero, valor_parcela, data_prevista_recebimento, status, sincronizado, deletado)
-                                VALUES (?, ?, ?, ?, ?, ?, 'P', 0, 0)
-                            `, [idRecebivel, idVenda, caixaId, i, valorPorParcela, dataPrevistaStr], (err) => {
-                                if (err) reject(err); else resolve();
-                            });
-                        });
-                    }
-                } catch (errCCLite) {
-                    console.error("[ERRO CRITICO - registrarVenda (Desmembrar CC SQLite)]:", errCCLite.message);
-                    throw new Error("Falha interna ao desmembrar parcelas de cartão local.");
+                    await this.vendas.inserirParcelaCartaoSQLite({
+                        id: crypto.randomUUID(),
+                        vendaId: idVenda,
+                        caixaId,
+                        parcelaNumero: i,
+                        valorParcela: valorPorParcela,
+                        dataPrevista: obterDataHoraLocalANSI(dataPrevista)
+                    });
                 }
             }
 
-            // 4. REPLICAÇÃO EM TEMPO REAL PRO POSTGRESQL (SE ONLINE)
+            // 4. Replicação imediata na nuvem se estiver online
             if (this.isOnline) {
                 try {
-                    if (!empIdGlobal) throw new Error("Dados de governança (Empresa ID) ausentes no escopo.");
+                    if (!empIdGlobal) throw new Error("Parâmetros de governança ausentes.");
 
                     const escopoVendas = this.obterEscopoTabela('vendas');
                     const filialPgValor = (escopoVendas === 'COMPARTILHADO') ? null : filIdGlobal;
 
-                    const queryPG = `
-                        INSERT INTO vendas (id, caixa_id, operador_id, cliente_id, forma_pagamento, origem, total, descricao_movimento, data_venda, bandeira, parcelas, empresa_id, filial_id) 
-                        VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5, $6, $7, $8, $9::timestamp, $10, $11, $12::uuid, $13::uuid)
-                    `;
-                    await this.pgClient.query(queryPG, [idVenda, caixaId, operadorId, clienteId, formaPagamento, origem, total, descricaoMovimento, dataAtual, bandeira, parcelas, empIdGlobal, filialPgValor]);
+                    // Envia a venda pai pro Postgres
+                    await this.vendas.inserirVendaPaiPostgres(payloadVenda, empIdGlobal, filialPgValor);
                     
+                    // Sincroniza lotes de crediário
                     // Upload assíncrono das parcelas de Crediário pro Postgres
                     if (formaPagamento === 'CR') {
-                        const contasLocais = await new Promise((resolve) => {
-                            this.sqliteDb.all(`SELECT * FROM contas_a_receber_locais WHERE venda_id = ?`, [idVenda], (err, rows) => resolve(rows || []));
-                        });
-                        
+                        const contasLocais = await this.vendas.obterContasReceberLocaisPorVenda(idVenda);
                         const escopoCR = this.obterEscopoTabela('contas_a_receber');
                         const filialCRPgValor = (escopoCR === 'COMPARTILHADO') ? null : filIdGlobal;
 
-                        let nrParcela = 1;
+                        let nrP = 1;
                         for (const conta of contasLocais) {
-                            const queryCRPostgres = `
-                                INSERT INTO contas_a_receber (id, empresa_id, filial_id, venda_id, cliente_id, parcela_numero, total_parcelas, data_emissao, data_vencimento, valor_original, valor_juros, valor_multa, valor_pago, saldo_restante, status, deletado)
-                                VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5::uuid, $6, $7, $8::timestamp, $9::date, $10, 0.00, 0.00, 0.00, $11, 'P', false)
-                            `;
-                            await this.pgClient.query(queryCRPostgres, [
-                                conta.id, empIdGlobal, filialCRPgValor, idVenda, clienteId,
-                                nrParcela, parcelas, dataAtual, conta.data_vencimento, conta.valor_original, conta.valor_original
-                            ]);
-                            this.sqliteDb.run(`UPDATE contas_a_receber_locais SET sincronizado = 1 WHERE id = ?`, [conta.id]);
-                            nrParcela++;
+                            // Invoca o repositório passando a entidade higienizada
+                            await this.vendas.inserirContaReceberPostgres(conta, nrP, parcelas, dataAtual, empIdGlobal, filialCRPgValor);
+                            this.vendas.marcarContaReceberSincronizada(conta.id);
+                            nrP++;
                         }
                     }
 
-                    // Upload assíncrono das parcelas de Cartão pro Postgres
+                    // Sincroniza lotes de cartão
                     if (formaPagamento === 'CC') {
                         const escopoRecebiveis = this.obterEscopoTabela('recebiveis_cartao');
                         const filialRecPgValor = (escopoRecebiveis === 'COMPARTILHADO') ? null : filIdGlobal;
 
-                        const recebiveis = await new Promise((resolve) => {
-                            this.sqliteDb.all(`SELECT * FROM recebiveis_cartao_locais WHERE venda_id = ?`, [idVenda], (err, rows) => resolve(rows || []));
-                        });
+                        const recebiveis = await this.vendas.obterRecebiveisCartaoLocaisPorVenda(idVenda);
                         for (const rec of recebiveis) {
-                            await this.pgClient.query(`INSERT INTO recebiveis_cartao (id, venda_id, caixa_id, parcela_numero, valor_parcela, data_prevista_recebimento, status, empresa_id, filial_id) VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5, $6::timestamp, 'P', $7::uuid, $8::uuid)`, [rec.id, idVenda, caixaId, rec.parcela_numero, rec.valor_parcela, rec.data_prevista_recebimento, empIdGlobal, filialRecPgValor]);
-                            this.sqliteDb.run(`UPDATE recebiveis_cartao_locais SET sincronizado = 1 WHERE id = ?`, [rec.id]);
+                            await this.vendas.inserirRecebivelCartaoPostgres(rec, empIdGlobal, filialRecPgValor);
+                            this.vendas.marcarRecebivelCartaoSincronizado(rec.id);
                         }
                     }
 
-                    this.sqliteDb.run(`UPDATE vendas_locais SET sincronizado = 1 WHERE id = ?`, [idVenda]);
+                    this.vendas.marcarVendaSincronizada(idVenda);
                     return { status: 'sucesso', modo: 'ONLINE', id: idVenda };
                 } catch (errPg) {
-                    console.error("[BANCO] Falha ao espelhar no Postgres, mantido em contingência local:", errPg.message);
+                    console.error("[BANCO] Erro de rede ao espelhar, operando em contingência:", errPg.message);
                     this.isOnline = false;
                 }
             }
 
             return { status: 'sucesso', modo: 'OFFLINE (SQLite)', id: idVenda };
-
         } catch (errGlobal) {
-            console.error("[ERRO CRITICO - database.registrarVenda]:", errGlobal.message);
+            console.error("[ERRO CRITICO] Falha no pipeline de gravação:", errGlobal.message);
             return { status: 'erro', mensagem: errGlobal.message };
         }
     }
@@ -772,151 +728,69 @@ class DatabaseManager {
 
     async sincronizarVendasPendentes() {
         try {
-            if (!this.isOnline) {
-                console.log("[SYNC] Execucao abortada: O sistema encontra-se em modo offline.");
-                return { status: 'offline' };
-            }
+            if (!this.isOnline) return { status: 'offline' };
 
-            // VALIDACAO DE SEGURANCA: Garante que as variaveis globais de governanca em memoria estejam disponiveis
             const empIdGlobal = this.tenantEmpresaId;
             const filIdGlobal = this.tenantFilialId;
+            if (!empIdGlobal) return { status: 'erro', mensagem: 'Governança ausente.' };
 
-            if (!empIdGlobal) {
-                console.error("[SYNC] Abortado: IDs de governanca (Empresa) nao carregados no escopo global.");
-                return { status: 'erro', mensagem: 'Governança ausente em memoria.' };
+            const vendasPendentes = await this.vendas.obterVendasLocaisPendentes();
+            if (vendasPendentes.length === 0) return { status: 'limpo', total: 0 };
+
+            console.log(`[SYNC] Sincronizando ${vendasPendentes.length} vendas via Repository...`);
+
+            const escopoVendas = this.obterEscopoTabela('vendas');
+            const filialPgValor = (escopoVendas === 'COMPARTILHADO') ? null : filIdGlobal;
+
+            for (const venda of vendasPendentes) {
+                const payloadVenda = {
+                    id: venda.id, caixaId: venda.caixa_id, operadorId: venda.operador_id,
+                    clienteId: (venda.cliente_id === 'CONSUMIDOR-FINAL' || !venda.cliente_id) ? '00000000-0000-0000-0000-000000000000' : venda.cliente_id,
+                    formaPagamento: venda.forma_pagamento, origem: venda.origem, total: venda.total,
+                    descricaoMovimento: venda.descricao_movimento, dataVenda: venda.data_venda,
+                    deletado: (venda.deletado === 1), bandeira: venda.bandeira, parcelas: venda.parcelas
+                };
+
+                // 1. Upload do cabeçalho pai
+                await this.vendas.inserirVendaPaiPostgres(payloadVenda, empIdGlobal, filialPgValor);
+                if (venda.deletado === 1) {
+                    await this.vendas.marcarDeletadaPostgres(venda.id);
+                }
+
+                // 2. Upload de recebíveis pendentes (CC)
+                if (venda.forma_pagamento === 'CC') {
+                    const recebiveis = await this.vendas.obterRecebiveisCartaoLocaisPorVenda(venda.id);
+                    const escopoRecebiveis = this.obterEscopoTabela('recebiveis_cartao');
+                    const filialRecPgValor = (escopoRecebiveis === 'COMPARTILHADO') ? null : filIdGlobal;
+
+                    for (const r of recebiveis) {
+                        await this.vendas.inserirRecebivelCartaoPostgres(r, empIdGlobal, filialRecPgValor);
+                        this.vendas.marcarRecebivelCartaoSincronizado(r.id);
+                    }
+                }
+
+                // 3. Upload de parcelas pendentes (CR)
+                if (venda.forma_pagamento === 'CR') {
+                    const contasLocais = await this.vendas.obterContasReceberLocaisPorVenda(venda.id);
+                    const escopoCR = this.obterEscopoTabela('contas_a_receber');
+                    const filialCRPgValor = (escopoCR === 'COMPARTILHADO') ? null : filIdGlobal;
+
+                    let nrP = 1;
+                    for (const conta of contasLocais) {
+                        await this.vendas.inserirContaReceberPostgres(conta, nrP, venda.parcelas, venda.data_venda, empIdGlobal, filialCRPgValor);
+                        this.vendas.marcarContaReceberSincronizada(conta.id);
+                        nrP++;
+                    }
+                }
+
+                this.vendas.marcarVendaSincronizada(venda.id);
             }
 
-            console.log("[SYNC] Buscando vendas pendentes de sincronizacao no SQLite local...");
-            return await new Promise((resolve) => {
-                this.sqliteDb.all(`SELECT * FROM vendas_locais WHERE sincronizado = 0`, [], async (err, vendasPendentes) => {
-                    if (err) {
-                        console.error("[SYNC] Erro ao ler registros da tabela vendas_locais no SQLite:", err.message);
-                        return resolve({ status: 'erro' });
-                    }
-
-                    if (vendasPendentes.length === 0) {
-                        console.log("[SYNC] Nao foram encontradas vendas pendentes locais para upload.");
-                        return resolve({ status: 'limpo', total: 0 }); 
-                    }
-
-                    console.log(`[SYNC] Sincronizando ${vendasPendentes.length} atualizacoes de forma otimizada com a nuvem...`);
-
-                    try {
-                        // Busca direto do cache em memória instantaneamente
-                        const escopoVendas = this.obterEscopoTabela('vendas');
-                        const filialPgValor = (escopoVendas === 'COMPARTILHADO') ? null : filIdGlobal;
-
-                        for (const venda of vendasPendentes) {
-                            const estaDeletadoPG = (venda.deletado === 1);
-
-                            // Aplicados os casts explicitos ::uuid e ::timestamp para blindagem do motor do Postgres
-                            const queryVendaPG = `
-                                INSERT INTO vendas (id, caixa_id, operador_id, cliente_id, forma_pagamento, origem, total, descricao_movimento, data_venda, deletado, bandeira, parcelas, empresa_id, filial_id)
-                                VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5, $6, $7, $8, $9::timestamp, $10, $11, $12, $13::uuid, $14::uuid)
-                                ON CONFLICT (id) DO UPDATE SET deletado = excluded.deletado
-                            `;
-                            
-                            const clientePgValor = (venda.cliente_id === 'CONSUMIDOR-FINAL' || !venda.cliente_id)
-                                ? '00000000-0000-0000-0000-000000000000' 
-                                : venda.cliente_id;
-
-                            // 1. Faz o upload da Venda Pai no Postgres utilizando as variáveis em memória
-                            await this.pgClient.query(queryVendaPG, [
-                                venda.id, venda.caixa_id, venda.operador_id, clientePgValor, 
-                                venda.forma_pagamento, venda.origem, venda.total, venda.descricao_movimento, 
-                                venda.data_venda, estaDeletadoPG, venda.bandeira, venda.parcelas, 
-                                empIdGlobal, filialPgValor
-                            ]);
-                            
-                            // =====================================================================
-                            // Sincronizacao Dinamica de Recebiveis (CC)
-                            // =====================================================================
-                            if (venda.forma_pagamento === 'CC') {
-                                try {
-                                    const escopoRecebiveis = this.obterEscopoTabela('recebiveis_cartao');
-                                    const filialRecPgValor = (escopoRecebiveis === 'COMPARTILHADO') ? null : filIdGlobal;
-
-                                    const recebiveis = await new Promise((resolveRec, rejectRec) => {
-                                        this.sqliteDb.all(`SELECT * FROM recebiveis_cartao_locais WHERE venda_id = ?`, [venda.id], (errRec, rows) => {
-                                            if (errRec) rejectRec(errRec);
-                                            else resolveRec(rows || []);
-                                        });
-                                    });
-
-                                    for (const r of recebiveis) {
-                                        const queryRecPG = `
-                                            INSERT INTO recebiveis_cartao (id, venda_id, caixa_id, parcela_numero, valor_parcela, data_prevista_recebimento, status, deletado, empresa_id, filial_id)
-                                            VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5, $6::timestamp, $7, $8, $9::uuid, $10::uuid)
-                                            ON CONFLICT (id) DO UPDATE SET status = excluded.status, deletado = excluded.deletado
-                                        `;
-                                        
-                                        await this.pgClient.query(queryRecPG, [r.id, venda.id, venda.caixa_id, r.parcela_numero, r.valor_parcela, r.data_prevista_recebimento, r.status, r.deletado === 1, empIdGlobal, filialRecPgValor]);
-                                        
-                                        this.sqliteDb.run(`UPDATE recebiveis_cartao_locais SET sincronizado = 1 WHERE id = ?`, [r.id]);
-                                    }
-                                } catch (errCC) {
-                                    console.error(`[ERRO - SYNC (Lote Recebiveis Venda ID ${venda.id})]:`, errCC.message);
-                                    throw errCC; // Rejeita para interromper o laco e marcar falha de rede
-                                }
-                            }
-
-                            // =====================================================================
-                            // Sincronizacao de Multiplas Parcelas do Crediario (CR)
-                            // =====================================================================
-                            if (venda.forma_pagamento === 'CR') {
-                                try {
-                                    const contasLocais = await new Promise((resolveCR, rejectCR) => {
-                                        this.sqliteDb.all(`SELECT * FROM contas_a_receber_locais WHERE venda_id = ? AND sincronizado = 0`, [venda.id], (errCR, rows) => {
-                                            if (errCR) rejectCR(errCR);
-                                            else resolveCR(rows || []);
-                                        });
-                                    });
-
-                                    if (contasLocais.length > 0) {
-                                        const escopoCR = this.obterEscopoTabela('contas_a_receber');
-                                        const filialCRPgValor = (escopoCR === 'COMPARTILHADO') ? null : filIdGlobal;
-
-                                        let nrP = 1;
-                                        for (const conta of contasLocais) {
-                                            const queryCRPostgres = `
-                                                INSERT INTO contas_a_receber (id, empresa_id, filial_id, venda_id, cliente_id, parcela_numero, total_parcelas, data_emissao, data_vencimento, valor_original, valor_juros, valor_multa, valor_pago, saldo_restante, status, deletado)
-                                                VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5::uuid, $6, $7, $8::timestamp, $9::date, $10, 0.00, 0.00, 0.00, $11, 'P', false)
-                                                ON CONFLICT (id) DO UPDATE SET status = excluded.status
-                                            `;
-                                            
-                                            await this.pgClient.query(queryCRPostgres, [
-                                                conta.id, empIdGlobal, filialCRPgValor, venda.id, venda.cliente_id,
-                                                nrP, venda.parcelas, venda.data_venda, conta.data_vencimento, conta.valor_original, conta.valor_original
-                                            ]);
-
-                                            this.sqliteDb.run(`UPDATE contas_a_receber_locais SET sincronizado = 1 WHERE id = ?`, [conta.id]);
-                                            nrP++;
-                                        }
-                                    }
-                                } catch (errCR) {
-                                    console.error(`[ERRO - SYNC (Lote Crediario Venda ID ${venda.id})]:`, errCR.message);
-                                    throw errCR;
-                                }
-                            }
-
-                            // 2. Com a venda pai e todas as parcelas seguras na nuvem, marca a venda local como sincronizada
-                            this.sqliteDb.run(`UPDATE vendas_locais SET sincronizado = 1 WHERE id = ?`, [venda.id]);
-                        }
-
-                        console.log("[SYNC] Sincronizacao e auditoria concluidas com sucesso!");
-                        resolve({ status: 'sucesso', total: vendasPendentes.length });
-
-                    } catch (error) {
-                        console.error("[SYNC] Erro detectado no lote de envio para a nuvem:", error.message);
-                        this.isOnline = false;
-                        resolve({ status: 'erro_rede' });
-                    }
-                });
-            });
-
-        } catch (errGlobal) {
-            console.error("[ERRO CRITICO - sincronizarVendasPendentes FATAL]: Excecao nao tratada no background worker:", errGlobal.message);
-            return { status: 'erro', mensagem: errGlobal.message };
+            return { status: 'sucesso', total: vendasPendentes.length };
+        } catch (error) {
+            console.error("[SYNC] Falha no lote incremental do repositório:", error.message);
+            this.isOnline = false;
+            return { status: 'erro_rede' };
         }
     }
 
@@ -1109,73 +983,24 @@ class DatabaseManager {
 
     async excluirLancamento(vendaId) {
         try {
-            console.log("[BANCO] Iniciando processo de exclusao de lancamento...");
+            console.log("[BANCO] Executando exclusão via VendaRepository...");
 
-            // 1. Se estiver online, atualiza na nuvem
             if (this.isOnline) {
                 try {
-                    console.log("[POSTGRES] Executando soft delete da venda e recebiveis no servidor remoto...");
-                    
-                    // Marca a venda como deletada no Postgres utilizando cast explicito ::uuid
-                    const queryPG = `UPDATE vendas SET deletado = true WHERE id = $1::uuid`;
-                    await this.pgClient.query(queryPG, [vendaId]);
-                    
-                    // Marca as parcelas como deletadas no Postgres utilizando cast explicito ::uuid
-                    await this.pgClient.query(`UPDATE recebiveis_cartao SET deletado = true WHERE venda_id = $1::uuid`, [vendaId]);
-
-                    try {
-                        console.log("[BANCO] Replicando marcacao de exclusao sincronizada no SQLite local...");
-                        // Se tudo subiu para a nuvem com sucesso, atualiza o SQLite local como sincronizado
-                        await new Promise((resolve, reject) => {
-                            this.sqliteDb.serialize(() => {
-                                this.sqliteDb.run("BEGIN TRANSACTION");
-                                this.sqliteDb.run(`UPDATE vendas_locais SET deletado = 1, sincronizado = 1 WHERE id = ?`, [vendaId]);
-                                this.sqliteDb.run(`UPDATE recebiveis_cartao_locais SET deletado = 1, sincronizado = 1 WHERE venda_id = ?`, [vendaId]);
-                                this.sqliteDb.run("COMMIT", (err) => {
-                                    if (err) reject(err);
-                                    else resolve();
-                                });
-                            });
-                        });
-                    } catch (errLiteSync) {
-                        console.error("[ERRO - excluirLancamento (Atualizar Status Sync SQLite)]:", errLiteSync.message);
-                        // Nao interrompe o fluxo principal de retorno pois o dado ja está salvo na nuvem
-                    }
-                    
-                    console.log(`[BANCO] Lancamento ${vendaId} e seus recebiveis marcados como deletados no Postgres e SQLite.`);
+                    await this.vendas.marcarDeletadaPostgres(vendaId);
+                    await this.vendas.marcarDeletadaLocal(vendaId, 1); // Grava localmente como já sincronizado
                     return { status: 'sucesso' };
-
                 } catch (err) {
-                    console.error("[BANCO] Erro ao excluir no Postgres, mudando para contingencia local:", err.message);
-                    this.isOnline = false; // Cai para o modo offline para concluir a operação localmente
+                    console.error("[BANCO] Servidor offline no delete, usando contingência local:", err.message);
+                    this.isOnline = false;
                 }
             }
 
-            // 2. Modo de contingência offline (Se a internet cair ou o bloco acima falhar)
-            console.log("[BANCO] Gravando marcacao de exclusao pendente de sincronizacao no SQLite local...");
-            return await new Promise((resolve, reject) => {
-                this.sqliteDb.serialize(() => {
-                    this.sqliteDb.run("BEGIN TRANSACTION");
-
-                    this.sqliteDb.run(`UPDATE vendas_locais SET deletado = 1, sincronizado = 0 WHERE id = ?`, [vendaId]);
-                    this.sqliteDb.run(`UPDATE recebiveis_cartao_locais SET deletado = 1, sincronizado = 0 WHERE venda_id = ?`, [vendaId]);
-
-                    this.sqliteDb.run("COMMIT", (err) => {
-                        if (err) {
-                            console.error("[BANCO] Erro ao atualizar exclusao pendente no SQLite:", err.message);
-                            this.sqliteDb.run("ROLLBACK", () => {
-                                reject(err);
-                            });
-                        } else {
-                            console.log(`[BANCO] Lancamento ${vendaId} e recebiveis marcados para exclusao local (Pendente de Sync).`);
-                            resolve({ status: 'sucesso' });
-                        }
-                    });
-                });
-            });
-
+            // Contingência offline pura
+            await this.vendas.marcarDeletadaLocal(vendaId, 0); // Grava localmente marcando pendência de sync
+            return { status: 'sucesso' };
         } catch (errGlobal) {
-            console.error("[ERRO CRITICO - excluirLancamento FATAL]: Excecao nao tratada na rotina de exclusao:", errGlobal.message);
+            console.error("[ERRO CRITICO - excluirLancamento]:", errGlobal.message);
             return { status: 'erro', mensagem: errGlobal.message };
         }
     }
