@@ -267,6 +267,48 @@ class CaixaRepository {
             this.db.sqliteDb.get(`SELECT COUNT(*) as indexador FROM contas_a_receber_locais WHERE venda_id = ? AND id <= ?`, [vendaId, contaId], (err, row) => resolve(row ? row.indexador : 1));
         });
     }
+
+    /**
+     * Busca os metadados cadastrais e de governança do caixa no SQLite local
+     */
+    async buscarCadastroLocal(caixaId) {
+        return new Promise((resolve, reject) => {
+            const query = 'SELECT id, descricao, empresa_id, filial_id FROM caixas_locais WHERE id = ? AND deletado = 0';
+            this.db.sqliteDb.get(query, [caixaId], (err, row) => {
+                if (err) reject(err);
+                else resolve(row || null);
+            });
+        });
+    }
+
+    /**
+     * Busca os metadados cadastrais e de governança do caixa no PostgreSQL remoto
+     */
+    async buscarCadastroPostgres(caixaId) {
+        const query = 'SELECT id, descricao, empresa_id, filial_id FROM caixas WHERE id = $1::uuid AND deletado = false';
+        const resultado = await this.db.pgClient.query(query, [caixaId]);
+        return resultado.rows.length > 0 ? resultado.rows[0] : null;
+    }
+
+    /**
+     * Salva ou atualiza a carga de governança do caixa de forma síncrona no SQLite local
+     */
+    async salvarCargaLocal(caixa) {
+        return new Promise((resolve, reject) => {
+            const query = `
+                INSERT INTO caixas_locais (id, descricao, empresa_id, filial_id, deletado) 
+                VALUES (?, ?, ?, ?, 0) 
+                ON CONFLICT(id) DO UPDATE SET descricao = ?, empresa_id = ?, filial_id = ?
+            `;
+            this.db.sqliteDb.run(query, [
+                caixa.id, caixa.descricao, caixa.empresa_id, caixa.filial_id,
+                caixa.descricao, caixa.empresa_id, caixa.filial_id
+            ], (err) => {
+                if (err) reject(err);
+                else resolve();
+            });
+        });
+    }
 }
 
 module.exports = CaixaRepository;

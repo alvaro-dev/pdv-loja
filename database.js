@@ -150,28 +150,19 @@ class DatabaseManager {
     // Atualize por completo o método obterDadosCaixa
     async obterDadosCaixa(caixaId) {
         try {
-            console.log("[BANCO] Iniciando busca de dados do caixa...");
+            console.log("[BANCO] Solicitando dados de governança do terminal ao CaixaRepository...");
             let caixaLocal = null;
 
             try {
-                // Consulta a base de dados local SQLite
-                caixaLocal = await new Promise((resolve, reject) => {
-                    const queryLocal = 'SELECT id, descricao, empresa_id, filial_id FROM caixas_locais WHERE id = ? AND deletado = 0';
-                    this.sqliteDb.get(queryLocal, [caixaId], (err, row) => {
-                        if (err) {
-                            reject(err);
-                        } else {
-                            resolve(row || null);
-                        }
-                    });
-                });
+                // Tenta carregar a última configuração armazenada em disco localmente
+                caixaLocal = await this.caixas.buscarCadastroLocal(caixaId);
             } catch (errLite) {
-                console.error("[ERRO - obterDadosCaixa (SQLite Local)]:", errLite.message);
-                // Continua a execucao para tentar buscar no Postgres caso o SQLite falhe
+                console.error("[ERRO - obterDadosCaixa Local SQLite]:", errLite.message);
             }
 
+            // Se localizou e o escopo de governança do tenant estiver íntegro, alimenta a sessão
             if (caixaLocal && caixaLocal.empresa_id && caixaLocal.filial_id) {
-                console.log("[LOCAL] IDs de Empresa e Filial carregados com sucesso do SQLite.");
+                console.log("[LOCAL] Identificadores de Empresa e Filial carregados do SQLite.");
                 
                 this.tenantEmpresaId = caixaLocal.empresa_id;
                 this.tenantFilialId = caixaLocal.filial_id;
@@ -186,61 +177,46 @@ class DatabaseManager {
                 };
             }
 
-            // Se nao encontrou localmente ou faltam dados de governanca, busca no Postgres
+            // Se não encontrou dados locais, faz o fetch online no PostgreSQL
             if (this.isOnline) {
                 try {
-                    console.log("[POSTGRES] Buscando configuracoes de governanca do caixa no servidor remoto...");
-                    // Nota: Usando cast explicito ::uuid conforme mapeamento rigido do banco de dados remoto
-                    const queryPG = 'SELECT id, descricao, empresa_id, filial_id FROM caixas WHERE id = $1::uuid AND deletado = false';
-                    const resultado = await this.pgClient.query(queryPG, [caixaId]);
+                    console.log("[POSTGRES] Buscando configurações de governança do caixa na nuvem...");
+                    const caixaRemoto = await this.caixas.buscarCadastroPostgres(caixaId);
                     
-                    if (resultado.rows.length > 0) {
-                        const caixa = resultado.rows[0];
-                        
-                        this.tenantEmpresaId = caixa.empresa_id;
-                        this.tenantFilialId = caixa.filial_id;
+                    if (caixaRemoto) {
+                        this.tenantEmpresaId = caixaRemoto.empresa_id;
+                        this.tenantFilialId = caixaRemoto.filial_id;
                         
                         try {
-                            // Salva ou atualiza os dados na tabela local de contingencia
-                            await new Promise((resolve, reject) => {
-                                this.sqliteDb.run(
-                                    `INSERT INTO caixas_locais (id, descricao, empresa_id, filial_id, deletado) 
-                                    VALUES (?, ?, ?, ?, 0) 
-                                    ON CONFLICT(id) DO UPDATE SET descricao=?, empresa_id=?, filial_id=?`,
-                                    [caixa.id, caixa.descricao, caixa.empresa_id, caixa.filial_id, caixa.descricao, caixa.empresa_id, caixa.filial_id],
-                                    (errInsert) => {
-                                        if (errInsert) reject(errInsert);
-                                        else resolve();
-                                    }
-                                );
-                            });
-                            console.log("[POSTGRES] Dados de governanca baixados e salvos no SQLite Local.");
+                            // Salva a carga estruturada no SQLite local para viabilizar os próximos boots offline
+                            await this.caixas.salvarCargaLocal(caixaRemoto);
+                            console.log("[POSTGRES] Carga de governança atualizada no SQLite Local.");
                         } catch (errSaveLite) {
-                            console.error("[ERRO - obterDadosCaixa (Gravar Carga SQLite)]:", errSaveLite.message);
+                            console.error("[ERRO - obterDadosCaixa Salvar Carga]:", errSaveLite.message);
                         }
                         
                         return {
-                            id: caixa.id,
-                            descricao: caixa.descricao,
-                            empresa_id: caixa.empresa_id,
-                            filial_id: caixa.filial_id,
+                            id: caixaRemoto.id,
+                            descricao: caixaRemoto.descricao,
+                            empresa_id: caixaRemoto.empresa_id,
+                            filial_id: caixaRemoto.filial_id,
                             empresa_nome: "Grupo Alfa Varejo",
                             filial_nome: "Alfa Matriz"
                         };
                     } else {
-                        console.log("[POSTGRES] Nao foi localizado nenhum registro para o ID de caixa informado.");
+                        console.log("[POSTGRES] Nenhum registro localizado para o ID informado.");
                     }
                 } catch (err) {
-                    console.error("[ERRO - obterDadosCaixa (Postgres Remote)]:", err.message);
+                    console.error("[ERRO - obterDadosCaixa Postgres]:", err.message);
                     this.isOnline = false;
                 }
             }
 
-            console.log("[BANCO] Finalizando metodo. Retornando ultima instancia conhecida do caixa local.");
+            console.log("[BANCO] Retornando última instância conhecida do caixa local.");
             return caixaLocal; 
 
         } catch (errGlobal) {
-            console.error("[ERRO CRITICO - obterDadosCaixa FATAL]: Excecao nao tratada:", errGlobal.message);
+            console.error("[ERRO CRITICO - obterDadosCaixa FATAL]:", errGlobal.message);
             return null;
         }
     }
