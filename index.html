@@ -2242,9 +2242,9 @@
         });
 
         // Função chamada ao clicar no ícone da impressora verde na tabela
-        window.reimprimirCrediario = (vendaId) => {
-            // Dispara o mesmo canal IPC que já configuramos no main.js
-            ipcRenderer.send('imprimir-comprovante-crediario', vendaId);
+        window.reimprimirCrediario = async (vendaId) => {
+            // Alterado de send para invoke para acompanhar a evolução não-bloqueante da arquitetura
+            await ipcRenderer.invoke('imprimir-comprovante-crediario', vendaId);
         };
 
         // 🌟 FUNÇÃO DE ATUALIZAÇÃO DO BADGE DE REDE SUPERIOR

@@ -1,117 +1,51 @@
 const { app, BrowserWindow, ipcMain } = require('electron');
-const path = require('path');
-const fs = require('fs'); // Módulo para ler/escrever arquivos
 const db = require('./database');
-const vendaService = require('./services/VendaService'); // 🌟 INCLUSÃO DA NOVA CAMADA
+const vendaService = require('./services/VendaService');
+const configService = require('./services/ConfigService'); // 🌟 NOVA CAMADA CENTRALIZADA
 
 let mainWindow;
 
-// Caminho onde o arquivo de configuração vai morar no Windows:
-// C:\Users\SEU_USUARIO\AppData\Roaming\pdv-loja\config.json
-const caminhoConfig = path.join(app.getPath('userData'), 'config.json');
-
-// Função para obter o ID do caixa configurado nesta máquina
-// Função focada apenas em ler o ID do caixa configurado no config.json
-function obterCaixaIdDaMaquina() {
-    try {
-        if (fs.existsSync(caminhoConfig)) {
-            const arquivo = fs.readFileSync(caminhoConfig, 'utf8');
-            const config = JSON.parse(arquivo);
-            return config.caixaId || null; // 🌟 Retorna null se não estiver configurado
-        } else {
-            // Cria o arquivo básico vazio na primeira execução, sem inventar um ID
-            fs.writeFileSync(caminhoConfig, JSON.stringify({ caixaId: "" }, null, 2));
-            return null;
-        }
-    } catch (err) {
-        console.error("Erro ao ler config.json:", err);
-        return null;
-    }
-}
-
 function createWindow() {
     mainWindow = new BrowserWindow({
-        width: 900,  // Largura padrão caso seja desmaximizada[cite: 4, 10]
-        height: 700, // Altura padrão caso seja desmaximizada[cite: 4, 10]
-        show: false, // 🌟 DICA DE OURO: Inicia oculta para não dar aquele "estalo" visual ao maximizar
+        width: 900,
+        height: 700,
+        show: false,
         webPreferences: {
-            nodeIntegration: true, //[cite: 4, 10]
-            contextIsolation: false //[cite: 4, 10]
+            nodeIntegration: true,
+            contextIsolation: false
         }
     });
 
-    mainWindow.loadFile('index.html'); //[cite: 4, 10]
-    
-    // 🌟 FORÇA A TELA A INICIAR MAXIMIZADA
+    mainWindow.loadFile('index.html');
     mainWindow.maximize();
-    
-    // Mostra a janela apenas quando ela já estiver maximizada e pronta
-    mainWindow.once('ready-to-show', () => {
-        mainWindow.show();
-    });
-    
-    // Opcional: Abre o console de desenvolvedor automaticamente para ajudar nos testes
-    // mainWindow.webContents.openDevTools();
+    mainWindow.once('ready-to-show', () => mainWindow.show());
 }
 
-// Função para disparar a sincronização e notificar o front-end sobre o estado da rede
 function iniciarTimerSincronizacao() {
-    console.log("[SISTEMA] Timer de sincronização em segundo plano ativado (Intervalo: 10 minutos).");
-    
+    console.log("[SISTEMA] Timer de sincronização em segundo plano ativado (10 minutos).");
     setInterval(async () => {
         try {
-            // 1. Verifica se a rede com o Ubuntu/Postgres está ativa
             await db.verificarConexaoPostgres(); 
-            
-            // 🌟 NOVO: Notifica o front-end em tempo real sobre a flutuação da rede
             if (mainWindow && mainWindow.webContents) {
                 mainWindow.webContents.send('notificar-status-rede', { isOnline: db.isOnline });
             }
-            
-            // 2. Se estiver online, executa a limpeza de pendências
             if (db.isOnline) {
                 await db.sincronizarVendasPendentes();
             }
         } catch (err) {
             console.error("[TIMER-ERRO] Erro na rotina de background:", err.message);
         }
-    }, 600000); // 600.000 ms = Exatamente 10 minutos
+    }, 600000);
 }
 
-// Inicializa o app e os bancos de dados de forma segura
+// Inicialização segura do app
 app.whenReady().then(async () => {
-    // Garante que a estrutura básica do arquivo exista
-    obterCaixaIdDaMaquina(); 
+    configService.obterCaixaId(); // Garante a criação do arquivo básico
     
-    let dadosBanco = null;
-    try {
-        if (fs.existsSync(caminhoConfig)) {
-            const arquivoConfig = JSON.parse(fs.readFileSync(caminhoConfig, 'utf8'));
-            
-            // 🌟 VERIFICAÇÃO SEGUNDA ONDA: Se houver a chave criptografada, descriptografa na hora
-            if (arquivoConfig && arquivoConfig.bancoCriptografado) {
-                if (safeStorage.isEncryptionAvailable()) {
-                    const bufferCriptografado = Buffer.from(arquivoConfig.bancoCriptografado, 'hex');
-                    const jsonStringDescriptografada = safeStorage.decryptString(bufferCriptografado);
-                    dadosBanco = JSON.parse(jsonStringDescriptografada);
-                    console.log("[SEGURANÇA] Parametros de rede do Postgres descriptografados com sucesso.");
-                } else {
-                    console.error("[SEGURANÇA] safeStorage indisponivel no bootstrap do app.");
-                }
-            } 
-            // 🔄 RETROCOMPATIBILIDADE TEMPORÁRIA: Se ainda estiver em texto limpo do formato antigo, captura
-            else if (arquivoConfig && arquivoConfig.banco) {
-                dadosBanco = arquivoConfig.banco;
-                console.log("[AVISO] Detectados parametros em texto limpo. Eles serao migrados no proximo salvamento.");
-            }
-        }
-    } catch (e) {
-        console.error("Nao foi possivel ler ou descriptografar os parametros do banco no config.json:", e.message);
-    }
+    // Recupera os parâmetros de rede descriptografados através do Service especialista
+    let dadosBanco = configService.recuperarPropriedadeCriptografada('bancoCriptografado');
     
-    // Passa os dados descriptografados em memoria (ou null) para o inicializador do banco
     await db.init(dadosBanco); 
-
     createWindow(); 
     iniciarTimerSincronizacao(); 
 
@@ -124,145 +58,142 @@ app.on('window-all-closed', () => {
     if (process.platform !== 'darwin') app.quit();
 });
 
-/**
- * Canal de Comunicação IPC (Inter-Process Communication)
- * Escuta os pedidos de venda vindos da tela do caixa (index.html)
- * Agora recebendo todos os parâmetros de negócio exigidos pelas tabelas
- */
+// =====================================================================
+// 🏎️ MALHA DE ROTEAMENTO DE SINAIS (IPC HANDLERS)
+// =====================================================================
 
- ipcMain.handle('tentar-login', async (event, { usuario, senha, caixaId }) => {
-    try {
-        console.log(`\n[IPC-LOGIN] Tentativa de login recebida no Main -> Usuário: "${usuario}" | Tamanho da Senha: ${senha ? senha.length : 0} caracteres`);
-        
-        const operador = await db.realizarLogin(usuario, senha, caixaId);
-        
-        if (!operador) {
-            console.log(`[IPC-LOGIN] Rejeitado pelo banco para o usuário: "${usuario}"`);
-            return { status: 'erro', mensagem: 'Usuário ou senha incorretos.' };
-        }
-
-        console.log(`[IPC-LOGIN] Autenticado com sucesso! Operador: "${operador.nome}" | Privilégio: "${operador.role}"`);
-        return { status: 'sucesso', operador };
-
-    } catch (error) {
-        console.error("[IPC-LOGIN] Bloqueio de segurança ou exceção:", error.message);
-        return { status: 'erro', mensagem: error.message };
-    }
+ipcMain.handle('obter-id-maquina', async () => {
+    return configService.obterCaixaId();
 });
 
+ipcMain.handle('atualizar-caixa-id-config', async (event, novoCaixaId) => {
+    try {
+        configService.atualizarCaixaId(novoCaixaId);
+        return { status: 'sucesso' };
+    } catch (err) { return { status: 'erro', mensagem: err.message }; }
+});
+
+ipcMain.handle('atualizar-banco-config', async (event, dadosBanco) => {
+    try {
+        const estruturaBanco = {
+            host: dadosBanco.host.trim(),
+            database: dadosBanco.database.trim(),
+            user: dadosBanco.user.trim(),
+            password: dadosBanco.password,
+            port: parseInt(dadosBanco.port) || 5432
+        };
+        configService.salvarPropriedadeCriptografada('bancoCriptografado', estruturaBanco);
+        return { status: 'sucesso' };
+    } catch (err) { return { status: 'erro', message: err.message }; }
+});
+
+ipcMain.handle('salvar-lembrete-login', async (event, { usuario, senha, ativo }) => {
+    try {
+        if (ativo && usuario && senha) {
+            const crypto = require('crypto');
+            const hashFinal = (senha.length === 64) ? senha : crypto.createHash('sha256').update(senha).digest('hex');
+            
+            configService.salvarPropriedadeCriptografada('lembrarOperadorCriptografado', {
+                usuario: usuario.trim(),
+                senha: hashFinal
+            });
+        } else {
+            configService.removerPropriedades(['lembrarOperadorCriptografado', 'lembrarOperador']);
+        }
+        return { status: 'sucesso' };
+    } catch (err) { return { status: 'erro', mensagem: err.message }; }
+});
+
+ipcMain.handle('obter-lembrete-login', async () => {
+    try {
+        const operadorDados = configService.recuperarPropriedadeCriptografada('lembrarOperadorCriptografado');
+        if (operadorDados) {
+            return { status: 'sucesso', usuario: operadorDados.usuario, senhaHash: operadorDados.senha };
+        }
+        return { status: 'vazio' };
+    } catch (err) { return { status: 'erro' }; }
+});
+
+// 🌟 ALTERADO PARA HANDLE: Impressão assíncrona não bloqueante e resiliente
+ipcMain.handle('imprimir-comprovante-crediario', async (event, vendaId) => {
+    try {
+        const venda = await db.vendas.obterVendaCupomSQLite(vendaId);
+        if (!venda) return { status: 'erro', mensagem: 'Venda não localizada.' };
+
+        const parcelas = await db.vendas.obterParcelasCupomSQLite(vendaId);
+        let workerWindow = new BrowserWindow({ show: false, webPreferences: { nodeIntegration: true, contextIsolation: false } });
+        const idCurto = venda.id.substring(0, 8);
+        
+        let htmlCupom = `<html><head><title>Comprovante_Crediario_${idCurto}</title><style>body { font-family: monospace; font-size: 12px; width: 280px; margin: 0; padding: 10px; color: #000; } .text-center { text-align: center; } .bold { font-weight: bold; } .linha { border-top: 1px dashed #000; margin: 8px 0; } .tabela { width: 100%; font-size: 11px; } .assinatura { margin-top: 40px; text-align: center; }</style></head><body><div class="text-center bold" style="font-size: 14px;">GRUPO ALFA VAREJO</div><div class="text-center">CNPJ: 00.000.000/0001-00</div><div class="text-center">FILIAL: ALFA MATRIZ</div><div class="linha"></div><div class="text-center bold">COMPROVANTE DE CREDIÁRIO</div><div class="text-center bold">NOTA PROMISSÓRIA</div><div class="linha"></div><div><b>DOC Venda:</b> ${venda.id.substring(0,8)}</div><div><b>Data/Hora:</b> ${venda.data_venda}</div><div class="linha"></div><div><b>DEVEDOR:</b> ${venda.cliente_nome}</div><div><b>CPF:</b> ${venda.cliente_cpf || 'Não Informado'}</div><div class="linha"></div><div class="bold">EXTRATO DAS PARCELAS:</div><table class="tabela"><thead><tr><th>Parc.</th><th>Vencimento</th><th style="text-align:right;">Valor</th></tr></thead><tbody>`;
+
+        let totalVenda = 0;
+        let index = 1;
+        for(const p of parcelas) {
+            totalVenda += parseFloat(p.valor_original);
+            const [ano, mes, dia] = p.data_vencimento.split('-');
+            htmlCupom += `<tr><td class="text-center">${index}/${parcelas.length}</td><td class="text-center">${dia}/${mes}/${ano}</td><td style="text-align:right;">R$ ${parseFloat(p.valor_original).toFixed(2)}</td></tr>`;
+            index++;
+        }
+
+        htmlCupom += `</tbody></table><div class="linha"></div><div class="bold" style="text-align: right; font-size: 13px;">TOTAL DO DEBITO: R$ ${totalVenda.toFixed(2)}</div><div class="linha"></div><div style="text-align: justify; font-size: 10px; line-height: 1.3;"><b>TERMO DE CONFISSÃO DE DÍVIDA:</b> Pelo presente instrument...</div><div class="assinatura">____________________________________<br><b>ASSINATURA DO CLIENTE</b></div></body></html>`;
+
+        workerWindow.loadURL('about:blank');
+        return new Promise((resolve) => {
+            workerWindow.webContents.on('did-finish-load', async () => {
+                await workerWindow.webContents.executeJavaScript(`document.title="Comprovante_Crediario_${idCurto}"; document.documentElement.innerHTML=\`${htmlCupom}\`;`);
+                workerWindow.webContents.print({ silent: false, printBackground: true }, (success) => {
+                    workerWindow.close();
+                    resolve({ status: success ? 'sucesso' : 'erro' });
+                });
+            });
+        });
+    } catch (err) { return { status: 'erro', mensagem: err.message }; }
+});
+
+// Canais de Repasse Direto (Delegados para Services/Repositories especialistas)
+ipcMain.handle('tentar-login', async (event, { usuario, senha, caixaId }) => {
+    try {
+        const operador = await db.realizarLogin(usuario, senha, caixaId);
+        return operador ? { status: 'sucesso', operador } : { status: 'erro', mensagem: 'Usuário ou senha incorretos.' };
+    } catch (e) { return { status: 'erro', mensagem: e.message }; }
+});
 
 ipcMain.handle('efetuar-venda', async (event, dadosVenda) => {
-    try {
-        // 🚀 O fluxo agora passa pela validação analítica do Service antes de gravar
-        const resultado = await vendaService.validarERegistrarVenda(dadosVenda);
-
-        // Atualiza a barra superior imediatamente caso a venda mude o estado para offline
-        if (mainWindow && mainWindow.webContents) {
-            mainWindow.webContents.send('notificar-status-rede', { isOnline: db.isOnline });
-        }
-        
-        return resultado;
-    } catch (error) {
-        console.error("[Main IPC] Erro interceptado na validação da venda:", error.message);
-        return { status: 'erro', mensagem: error.message };
-    }
+    const r = await vendaService.validarERegistrarVenda(dadosVenda);
+    if (mainWindow) mainWindow.webContents.send('notificar-status-rede', { isOnline: db.isOnline });
+    return r;
 });
 
-// Canal para carregar os dados do caixa na inicialização de forma ASSÍNCRONA (Não Bloqueante)
 ipcMain.handle('carregar-caixa', async (event, caixaId) => {
     try {
         const caixa = await db.obterDadosCaixa(caixaId);
-        
-        if (!caixa || caixa.bloqueado === 'S') {
-            return { status: 'erro', mensagem: 'Caixa não cadastrado para este ponto de venda ou está bloqueado!' };
-        }
-        
-        // 🌟 EVOLUÇÃO: Removemos o .then() travado e o await. 
-        // Os métodos abaixo são disparados, mas o fluxo do código NÃO ESPERA eles terminarem!
-        
-        // Sincronização de Operadores rodando em background
-        db.sincronizarOperadores()
-            .then(res => console.log(`[SYNC-BACKGROUND] Operadores autorizados sincronizados:`, res))
-            .catch(err => console.error(`[SYNC-BACKGROUND] Falha no sync de operadores em background:`, err.message));
-        
-        // Sincronização de Clientes rodando em background
-        db.sincronizarClientes()
-            .then(res => console.log(`[SYNC-BACKGROUND] Clientes com limite líquido atualizados:`, res))
-            .catch(err => console.error(`[SYNC-BACKGROUND] Falha no sync de clientes em background:`, err.message));
-        
-        // 🚀 RESPONDE IMEDIATAMENTE PRO FRONT-END: 
-        // A tela de vendas abre em milissegundos usando os dados pré-existentes do SQLite!
+        if (!caixa || caixa.bloqueado === 'S') return { status: 'erro', mensagem: 'Caixa inválido ou bloqueado!' };
+        db.sincronizarOperadores().catch(() => {});
+        db.sincronizarClientes().catch(() => {});
         return { status: 'sucesso', dados: caixa };
-
-    } catch (error) {
-        console.error("Erro no carregamento do caixa:", error);
-        return { status: 'erro', mensagem: error.message };
-    }
+    } catch (e) { return { status: 'erro', mensagem: e.message }; }
 });
 
-// Canal para fechar o aplicativo forçadamente
-ipcMain.on('fechar-aplicativo', () => {
-    app.quit();
-});
+ipcMain.handle('verificar-caixa-aberto', async (e, id) => await db.verificarCaixaAberto(id));
+ipcMain.handle('abrir-caixa', async (e, d) => await db.abrirCaixa(d.caixaId, d.operadorId, d.valorAbertura));
+ipcMain.handle('obter-resumo-turno', async (e, id) => await db.obterResumoTurnoAtual(id));
+ipcMain.handle('fechar-caixa-turno', async (e, d) => await db.fecharCaixa(d.movimentoId, d.operadorId, d.valorFechamento, d.valorContado, d.diferenca));
+ipcMain.handle('excluir-lancamento', async (e, id) => await db.excluirLancamento(id));
+ipcMain.handle('listar-vendas-turno', async (e, id) => await db.listarVendasTurnoAtual(id));
+ipcMain.handle('obter-status-sincronizacao', async () => await db.obterStatusSincronizacao());
+ipcMain.handle('sincronizar-tabela-manual', async (e, t) => ({ status: 'sucesso', logs: await db.sincronizarTabelaManual(t) }));
+ipcMain.handle('buscar-clientes-pdv', async (e, t) => await db.buscarClientesLocais(t));
+ipcMain.on('fechar-aplicativo', () => app.quit());
+ipcMain.handle('verificar-status-rede-banco', async () => ({ isOnline: db.isOnline, semConfig: !configService.recuperarPropriedadeCriptografada('bancoCriptografado') }));
 
-/**
- * Canal para a tela pedir o ID do caixa desta máquina
- */
-ipcMain.handle('obter-id-maquina', async () => {
-    // CORREÇÃO: Mudado de 'obtenerCaixaIdDaMaquina' para 'obterCaixaIdDaMaquina'
-    return obterCaixaIdDaMaquina(); 
-});
-
-// Canal para verificar se o caixa já está aberto
-ipcMain.handle('verificar-caixa-aberto', async (event, caixaId) => {
-    try {
-        return await db.verificarCaixaAberto(caixaId);
-    } catch (error) {
-        console.error("Erro ao verificar caixa aberto:", error);
-        return false; // Em caso de erro, assume falso para forçar a rotina de segurança
-    }
-});
-
-// Canal para realizar a abertura do caixa
-ipcMain.handle('abrir-caixa', async (event, dados) => {
-    try {
-        const { caixaId, operadorId, valorAbertura } = dados;
-        return await db.abrirCaixa(caixaId, operadorId, valorAbertura);
-    } catch (error) {
-        console.error("Erro ao abrir caixa no Main:", error);
-        return { status: 'erro', mensagem: error.message };
-    }
-});
-
-ipcMain.handle('obter-resumo-turno', async (event, caixaId) => {
-    return await db.obterResumoTurnoAtual(caixaId);
-});
-
-ipcMain.handle('fechar-caixa-turno', async (event, dados) => {
-    // 🛠️ AJUSTADO: Agora recebe valorContado e diferenca do front-end
-    const { movimentoId, operadorId, valorFechamento, valorContado, diferenca } = dados;
-    return await db.fecharCaixa(movimentoId, operadorId, valorFechamento, valorContado, diferenca);
-});
-
-ipcMain.handle('excluir-lancamento', async (event, vendaId) => {
-    try {
-        return await db.excluirLancamento(vendaId);
-    } catch (error) {
-        return { status: 'erro', mensagem: error.message };
-    }
-});
-
-ipcMain.handle('listar-vendas-turno', async (event, caixaId) => {
-    return await db.listarVendasTurnoAtual(caixaId);
-});
-
+// 🌟 REINSERIDO: Canal de auditoria do histórico de turnos repassando para o Database Manager
 ipcMain.handle('obter-historico-turnos', async (event, filtros) => {
     if (!db.isOnline) {
         return { status: 'offline', mensagem: 'O histórico de auditoria global requer conexão ativa com o servidor PostgreSQL.' };
     }
     
     try {
-        // Extrai as datas vindas da tela. Se não existirem, deixa undefined para o banco tratar
+        // Extrai as datas vindas do front-end. Se não existirem, deixa undefined para o repositório tratar
         const dataInicio = filtros ? filtros.dataInicio : undefined;
         const dataFim = filtros ? filtros.dataFim : undefined;
 
@@ -273,9 +204,10 @@ ipcMain.handle('obter-historico-turnos', async (event, filtros) => {
     }
 });
 
+// 🌟 REINSERIDO: Canal do extrato operacional detalhado de lançamentos do período
 ipcMain.handle('obter-vendas-periodo', async (event, { caixaId, dataAbertura, dataFechamento }) => {
     if (!db.isOnline) {
-        return { status: 'offline', mensagem: 'O extrato detalhado de lançamentos requer conexão ativa com o servidor PostgreSQL.' };
+        return { status: 'offline', margin: 'O extrato detalhado de lançamentos requer conexão ativa com o servidor PostgreSQL.' };
     }
     
     try {
@@ -283,309 +215,5 @@ ipcMain.handle('obter-vendas-periodo', async (event, { caixaId, dataAbertura, da
         return { status: 'sucesso', dados };
     } catch (error) {
         return { status: 'offline', mensagem: error.message };
-    }
-});
-
-// 🔒 IMPORTAÇÃO DO MÓDULO DE SEGURANÇA NATIVO DO ELECTRON
-const { safeStorage } = require('electron');
-
-// 💾 Canal Corrigido: Criptografa o bloco inteiro do operador em uma única linha hex
-ipcMain.handle('salvar-lembrete-login', async (event, { usuario, senha, ativo }) => {
-    try {
-        const crypto = require('crypto');
-        let config = {};
-        if (fs.existsSync(caminhoConfig)) {
-            config = JSON.parse(fs.readFileSync(caminhoConfig, 'utf8'));
-        }
-        
-        if (ativo && usuario && senha) {
-            // 1. Gera o Hash SHA-256 padrão da senha digitada
-            const hashFinal = (senha.length === 64) 
-                ? senha 
-                : crypto.createHash('sha256').update(senha).digest('hex');
-            
-            if (!safeStorage.isEncryptionAvailable()) {
-                throw new Error("A criptografia nativa do sistema operacional nao esta disponivel.");
-            }
-
-            // 2. Cria o objeto estruturado que queremos proteger
-            const dadosLembrete = {
-                usuario: usuario.trim(),
-                senha: hashFinal
-            };
-
-            // 3. Transforma o objeto em string e criptografa em um bloco único
-            const stringLembrete = JSON.stringify(dadosLembrete);
-            
-            // 🔥 CORREÇÃO AQUI: Alterado de 'stringBanco' para 'stringLembrete'
-            const bufferCriptografado = safeStorage.encryptString(stringLembrete); 
-            
-            config.lembrarOperadorCriptografado = bufferCriptografado.toString('hex');
-            
-            // Remove a propriedade antiga estruturada se ela existir no arquivo por segurança
-            delete config.lembrarOperador;
-        } else {
-            // Se o operador deslogar ou desmarcar, remove as chaves de forma limpa
-            delete config.lembrarOperadorCriptografado;
-            delete config.lembrarOperador;
-        }
-        
-        fs.writeFileSync(caminhoConfig, JSON.stringify(config, null, 2));
-        console.log("[SEGURANÇA] Dados do operador salvos e criptografados em bloco unico.");
-        return { status: 'sucesso' };
-    } catch (err) {
-        console.error("Erro ao salvar lembrete de login seguro:", err.message);
-        return { status: 'erro', mensagem: err.message };
-    }
-});
-
-// 📖 Canal para recuperar e decodificar o bloco único do operador automático
-ipcMain.handle('obter-lembrete-login', async () => {
-    try {
-        if (fs.existsSync(caminhoConfig)) {
-            const config = JSON.parse(fs.readFileSync(caminhoConfig, 'utf8'));
-            
-            // 1. Tenta ler o novo formato em string Hexadecimal única
-            if (config && config.lembrarOperadorCriptografado) {
-                if (!safeStorage.isEncryptionAvailable()) {
-                    console.error("[SEGURANÇA] safeStorage indisponivel para decodificacao.");
-                    return { status: 'vazio' };
-                }
-
-                const bufferCriptografado = Buffer.from(config.lembrarOperadorCriptografado, 'hex');
-                const stringDescriptografada = safeStorage.decryptString(bufferCriptografado);
-                const operadorDados = JSON.parse(stringDescriptografada);
-                
-                console.log(`[CONFIG.JSON] Usuario localizado via bloco seguro unico: "${operadorDados.usuario}"`);
-                return { 
-                    status: 'sucesso', 
-                    usuario: operadorDados.usuario, 
-                    senhaHash: operadorDados.senha
-                };
-            }
-            // 🔄 RETROCOMPATIBILIDADE: Se ainda estiver no formato antigo de strings hex separadas
-            else if (config && config.lembrarOperador && config.lembrarOperador.senha) {
-                if (!safeStorage.isEncryptionAvailable()) return { status: 'vazio' };
-
-                const bufferCriptografado = Buffer.from(config.lembrarOperador.senha, 'hex');
-                const senhaDesofuscadaHash = safeStorage.decryptString(bufferCriptografado);
-                
-                return { 
-                    status: 'sucesso', 
-                    usuario: config.lembrarOperador.usuario, 
-                    senhaHash: senhaDesofuscadaHash
-                };
-            }
-        }
-        return { status: 'vazio' };
-    } catch (err) {
-        console.error("[CONFIG.JSON] Erro critico ao ler lembrete de login criptografado:", err.message);
-        return { status: 'erro' };
-    }
-});
-
-// Canal para obter as estatísticas das tabelas locais
-ipcMain.handle('obter-status-sincronizacao', async () => {
-    try {
-        return await db.obterStatusSincronizacao();
-    } catch (error) {
-        return { status: 'erro', mensagem: error.message };
-    }
-});
-
-// Canal para disparar a sincronização de uma tabela específica por demanda
-ipcMain.handle('sincronizar-tabela-manual', async (event, tipo) => {
-    try {
-        const logs = await db.sincronizarTabelaManual(tipo);
-        return { status: 'sucesso', logs };
-    } catch (error) {
-        return { status: 'erro', mensagem: error.message };
-    }
-});
-
-// 🌟 NOVO: Canal para gravar o caixaId editado manualmente pela tela de erro
-ipcMain.handle('atualizar-caixa-id-config', async (event, novoCaixaId) => {
-    try {
-        let config = {};
-        if (fs.existsSync(caminhoConfig)) {
-            config = JSON.parse(fs.readFileSync(caminhoConfig, 'utf8'));
-        }
-        
-        // Atualiza a propriedade do terminal com o UUID colhido
-        config.caixaId = novoCaixaId.trim();
-        
-        fs.writeFileSync(caminhoConfig, JSON.stringify(config, null, 2));
-        return { status: 'sucesso' };
-    } catch (err) {
-        console.error("Erro ao salvar caixaId manualmente:", err);
-        return { status: 'erro', mensagem: err.message };
-    }
-});
-
-// 💾 Canal Corrigido: Criptografa as credenciais do Postgres antes de salvar no config.json
-ipcMain.handle('atualizar-banco-config', async (event, dadosBanco) => {
-    try {
-        let config = {};
-        if (fs.existsSync(caminhoConfig)) {
-            config = JSON.parse(fs.readFileSync(caminhoConfig, 'utf8'));
-        }
-        
-        // 1. Estrutura o objeto de conexão de forma higienizada
-        const estruturaBanco = {
-            host: dadosBanco.host.trim(),
-            database: dadosBanco.database.trim(),
-            user: dadosBanco.user.trim(),
-            password: dadosBanco.password,
-            port: parseInt(dadosBanco.port) || 5432
-        };
-
-        if (!safeStorage.isEncryptionAvailable()) {
-            throw new Error("A criptografia nativa do sistema operacional nao esta disponivel.");
-        }
-
-        // 2. Converte o objeto do banco em String e depois criptografa gerando um Buffer
-        const stringBanco = JSON.stringify(estruturaBanco);
-        const bufferCriptografado = safeStorage.encryptString(stringBanco);
-        
-        // 3. Converte o Buffer em Hexadecimal limpo para salvar no arquivo JSON de texto plano
-        config.bancoCriptografado = bufferCriptografado.toString('hex');
-        
-        // Remove a propriedade antiga em texto limpo se ela existir por segurança
-        delete config.banco;
-        
-        fs.writeFileSync(caminhoConfig, JSON.stringify(config, null, 2));
-        console.log("[SEGURANÇA] Novas credenciais de banco salvas de forma criptografada.");
-        return { status: 'sucesso' };
-    } catch (err) {
-        console.error("Erro ao salvar e criptografar parametros do Postgres:", err);
-        return { status: 'erro', message: err.message };
-    }
-});
-
-ipcMain.handle('buscar-clientes-pdv', async (event, termo) => {
-    return await db.buscarClientesLocais(termo);
-});
-
-// 🌟 MODIFICADO: Canal expõe o status online e valida se o config.json possui credenciais de banco
-ipcMain.handle('verificar-status-rede-banco', async () => {
-    let semConfig = true;
-    try {
-        if (fs.existsSync(caminhoConfig)) {
-            const config = JSON.parse(fs.readFileSync(caminhoConfig, 'utf8'));
-            if (config.bancoCriptografado || config.banco) {
-                semConfig = false;
-            }
-        }
-    } catch (e) {
-        console.error("Erro ao auditar presenca de chaves no config.json:", e.message);
-    }
-    
-    return { isOnline: db.isOnline, semConfig };
-});
-
-// 🌟 NOVO: Canal para processar a emissão do cupom de crediário
-// 🌟 MODIFICADO: Evento limpo, consumindo dados do repositório especializado
-ipcMain.on('imprimir-comprovante-crediario', async (event, vendaId) => {
-    try {
-        // 1. Busca os dados higienizados através do VendaRepository acoplado ao Database Manager
-        const venda = await db.vendas.obterVendaCupomSQLite(vendaId);
-        if (!venda) {
-            console.log(`[IMPRESSÃO] Falha: Lançamento ID ${vendaId} não localizado.`);
-            return;
-        }
-
-        // 2. Busca o lote de faturas do carnê
-        const parcelas = await db.vendas.obterParcelasCupomSQLite(vendaId);
-
-        // 3. Cria a janela oculta do Electron para desenhar o cupom térmico (padrão 80mm)
-        let workerWindow = new BrowserWindow({ 
-            show: false, 
-            webPreferences: { nodeIntegration: true, contextIsolation: false } 
-        });
-        
-        const idCurto = venda.id.substring(0, 8);
-        
-        let htmlCupom = `
-            <html>
-            <head>
-                <title>Comprovante_Crediario_${idCurto}</title>
-                <style>
-                    body { font-family: monospace; font-size: 12px; width: 280px; margin: 0; padding: 10px; color: #000; }
-                    .text-center { text-align: center; }
-                    .bold { font-weight: bold; }
-                    .linha { border-top: 1px dashed #000; margin: 8px 0; }
-                    .tabela { width: 100%; font-size: 11px; }
-                    .assinatura { margin-top: 40px; text-align: center; }
-                </style>
-            </head>
-            <body>
-                <div class="text-center bold" style="font-size: 14px;">GRUPO ALFA VAREJO</div>
-                <div class="text-center">CNPJ: 00.000.000/0001-00</div>
-                <div class="text-center">FILIAL: ALFA MATRIZ</div>
-                <div class="linha"></div>
-                <div class="text-center bold">COMPROVANTE DE CREDIÁRIO</div>
-                <div class="text-center bold">NOTA PROMISSÓRIA</div>
-                <div class="linha"></div>
-                <div><b>DOC Venda:</b> ${venda.id.substring(0,8)}</div>
-                <div><b>Data/Hora:</b> ${venda.data_venda}</div>
-                <div class="linha"></div>
-                <div><b>DEVEDOR:</b> ${venda.cliente_nome}</div>
-                <div><b>CPF:</b> ${venda.cliente_cpf || 'Não Informado'}</div>
-                <div class="linha"></div>
-                <div class="bold">EXTRATO DAS PARCELAS:</div>
-                <table class="tabela">
-                    <thead>
-                        <tr><th>Parc.</th><th>Vencimento</th><th style="text-align:right;">Valor</th></tr>
-                    </thead>
-                    <tbody>
-        `;
-
-        let totalVenda = 0;
-        let index = 1;
-        for(const p of parcelas) {
-            const valorFmt = parseFloat(p.valor_original).toFixed(2);
-            totalVenda += parseFloat(p.valor_original);
-            
-            const [ano, mes, dia] = p.data_vencimento.split('-');
-            const dataBr = `${dia}/${mes}/${ano}`;
-
-            htmlCupom += `<tr><td class="text-center">${index}/${parcelas.length}</td><td class="text-center">${dataBr}</td><td style="text-align:right;">R$ ${valorFmt}</td></tr>`;
-            index++;
-        }
-
-        htmlCupom += `
-                    </tbody>
-                </table>
-                <div class="linha"></div>
-                <div class="bold" style="text-align: right; font-size: 13px;">TOTAL DO DEBITO: R$ ${totalVenda.toFixed(2)}</div>
-                <div class="linha"></div>
-                <div style="text-align: justify; font-size: 10px; line-height: 1.3;">
-                    <b>TERMO DE CONFISSÃO DE DÍVIDA:</b> Pelo presente instrumento, confesso e me obrigo de forma irrevogável a pagar livre de despesas a quantia acima discriminada dividida nas respectivas faturas e vencimentos estipulados neste cupom.
-                </div>
-                <div class="assinatura">
-                    ____________________________________<br>
-                    <b>ASSINATURA DO CLIENTE</b>
-                </div>
-                <div class="text-center" style="margin-top: 20px; font-size: 9px;">Obrigado pela preferência!</div>
-            </body>
-            </html>
-        `;
-
-        workerWindow.loadURL('about:blank');
-
-        workerWindow.webContents.on('did-finish-load', async () => {
-            await workerWindow.webContents.executeJavaScript(`
-                document.title = "Comprovante_Crediario_${idCurto}";
-                document.documentElement.innerHTML = \`${htmlCupom}\`;
-            `);
-
-            workerWindow.webContents.print({ silent: false, printBackground: true }, (success, failureReason) => {
-                if (!success) console.error("Falha ao imprimir:", failureReason);
-                workerWindow.close();
-            });
-        });
-
-    } catch (err) {
-        console.error("Erro ao processar impressão do crediário:", err.message);
     }
 });
