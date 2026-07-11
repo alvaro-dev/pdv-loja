@@ -221,8 +221,7 @@ class DatabaseManager {
         }
     }
 
-    // 🌟 MODIFICADO: Agora o método init recebe as credenciais lidas do JSON pelo Main
-    // 🌟 ATUALIZADO: Livre de strings chumbadas e com validação rigorosa de parâmetros
+    // 🌟 MODIFICADO: 100% isolado de queries SQL nativas através do padrão Repository Pattern
     async init(configBanco) {
         try {
             console.log(`[Banco Local] Caminho do SQLite: ${this.sqlitePath}`);
@@ -251,7 +250,7 @@ class DatabaseManager {
                 console.error("ERRO CONEXAO POSTGRESQL: Parametros invalidos ou nao existem no config.json!");
                 console.log("Conectando em modo OFFLINE de contingencia (Apenas SQLite Local Ativo).");
                 console.log("==========================================================================");
-                return; // Aborta a tentativa de conexão com o Postgres imediatamente
+                return; 
             }
 
             // 3. Se passou na validação do JSON, tenta conectar no Postgres físico
@@ -270,16 +269,16 @@ class DatabaseManager {
                 this.isOnline = true;
                 console.log("[DATABASE] Conectado ao PostgreSQL externo com sucesso!");
 
-                // Carrega todas as regras de escopo na inicialização do sistema
+                // Carrega todas as regras de escopo na inicialização usando o Repository especialista
                 this.escoposCache = {};
                 try {
-                    const resEscopos = await this.pgClient.query("SELECT tabela_nome, escopo FROM tabelas_escopo");
-                    resEscopos.rows.forEach(row => {
+                    const linhasEscopos = await this.caixas.buscarEscoposTabelasPostgres();
+                    linhasEscopos.forEach(row => {
                         this.escoposCache[row.tabela_nome.toLowerCase()] = String(row.escopo).toUpperCase();
                     });
                     console.log("[DATABASE] Cache de regras de escopo carregado com sucesso:", this.escoposCache);
                 } catch (errEscopo) {
-                    console.error("[ERRO - init (query tabelas_escopo)]: Falha ao carregar tabela de escopos, usando padroes EXCLUSIVO:", errEscopo.message);
+                    console.error("[ERRO - init (buscarEscoposTabelasPostgres)]: Falha ao carregar tabela de escopos, usando padroes EXCLUSIVO:", errEscopo.message);
                 }
             } catch (err) {
                 this.isOnline = false;

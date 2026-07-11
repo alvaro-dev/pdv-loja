@@ -309,6 +309,15 @@ class CaixaRepository {
             });
         });
     }
+
+    /**
+     * Busca todas as regras de escopo e governança configuradas globalmente no PostgreSQL remoto
+     */
+    async buscarEscoposTabelasPostgres() {
+        const query = "SELECT tabela_nome, escopo FROM tabelas_escopo";
+        const resultado = await this.db.pgClient.query(query);
+        return resultado.rows;
+    }
 }
 
 module.exports = CaixaRepository;
