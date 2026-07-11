@@ -251,6 +251,42 @@ class VendaRepository {
             });
         });
     }
+
+    /**
+     * Busca os dados da venda pai acoplados ao cadastro do cliente para renderização de cupom
+     */
+    async obterVendaCupomSQLite(vendaId) {
+        return new Promise((resolve, reject) => {
+            const query = `
+                SELECT v.*, c.nome as cliente_nome, c.cpf as cliente_cpf 
+                FROM vendas_locais v 
+                JOIN clientes_locais c ON c.id = v.cliente_id 
+                WHERE v.id = ?
+            `;
+            this.db.sqliteDb.get(query, [vendaId], (err, row) => {
+                if (err) reject(err);
+                else resolve(row || null);
+            });
+        });
+    }
+
+    /**
+     * Busca os desmembramentos das parcelas ativas ligadas a venda para o extrato do cupom
+     */
+    async obterParcelasCupomSQLite(vendaId) {
+        return new Promise((resolve, reject) => {
+            const query = `
+                SELECT id, data_vencimento, valor_original 
+                FROM contas_a_receber_locais 
+                WHERE venda_id = ? 
+                ORDER BY data_vencimento ASC
+            `;
+            this.db.sqliteDb.all(query, [vendaId], (err, rows) => {
+                if (err) reject(err);
+                else resolve(rows || []);
+            });
+        });
+    }
 }
 
 module.exports = VendaRepository;

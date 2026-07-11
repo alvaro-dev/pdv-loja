@@ -484,27 +484,27 @@ ipcMain.handle('verificar-status-rede-banco', async () => {
 });
 
 // 🌟 NOVO: Canal para processar a emissão do cupom de crediário
+// 🌟 MODIFICADO: Evento limpo, consumindo dados do repositório especializado
 ipcMain.on('imprimir-comprovante-crediario', async (event, vendaId) => {
     try {
-        // 1. Busca os dados da venda e do cliente direto no SQLite de contingência rápida
-        const venda = await new Promise((resolve) => {
-            db.sqliteDb.get(`SELECT v.*, c.nome as cliente_nome, c.cpf as cliente_cpf FROM vendas_locais v JOIN clientes_locais c ON c.id = v.cliente_id WHERE v.id = ?`, [vendaId], (err, row) => resolve(row));
+        // 1. Busca os dados higienizados através do VendaRepository acoplado ao Database Manager
+        const venda = await db.vendas.obterVendaCupomSQLite(vendaId);
+        if (!venda) {
+            console.log(`[IMPRESSÃO] Falha: Lançamento ID ${vendaId} não localizado.`);
+            return;
+        }
+
+        // 2. Busca o lote de faturas do carnê
+        const parcelas = await db.vendas.obterParcelasCupomSQLite(vendaId);
+
+        // 3. Cria a janela oculta do Electron para desenhar o cupom térmico (padrão 80mm)
+        let workerWindow = new BrowserWindow({ 
+            show: false, 
+            webPreferences: { nodeIntegration: true, contextIsolation: false } 
         });
-
-        if (!venda) return;
-
-        // 2. Busca todas as parcelas geradas para esta assinatura
-        const parcelas = await new Promise((resolve) => {
-            db.sqliteDb.all(`SELECT * FROM contas_a_receber_locais WHERE venda_id = ? ORDER BY data_vencimento ASC`, [vendaId], (err, rows) => resolve(rows || []));
-        });
-
-        // 3. Cria uma janela oculta do Electron para desenhar o cupom térmico (padrão 80mm)
-        let workerWindow = new BrowserWindow({ show: false, webPreferences: { nodeIntegration: true, contextIsolation: false } });
         
-        // Corta o ID para os primeiros 8 caracteres para o nome do arquivo não ficar gigante
         const idCurto = venda.id.substring(0, 8);
         
-        // Montagem do HTML formatado via CSS para bobinas térmicas
         let htmlCupom = `
             <html>
             <head>
@@ -546,7 +546,6 @@ ipcMain.on('imprimir-comprovante-crediario', async (event, vendaId) => {
             const valorFmt = parseFloat(p.valor_original).toFixed(2);
             totalVenda += parseFloat(p.valor_original);
             
-            // Inverte a data ISO para o formato brasileiro no cupom
             const [ano, mes, dia] = p.data_vencimento.split('-');
             const dataBr = `${dia}/${mes}/${ano}`;
 
@@ -572,18 +571,14 @@ ipcMain.on('imprimir-comprovante-crediario', async (event, vendaId) => {
             </html>
         `;
 
-        // Carrega o HTML na janela oculta e dispara o comando físico de impressão
-        workerWindow.loadURL('about:blank'); // Abre uma página em branco limpa
+        workerWindow.loadURL('about:blank');
 
         workerWindow.webContents.on('did-finish-load', async () => {
-            // Injeta o HTML diretamente no body da página em branco
             await workerWindow.webContents.executeJavaScript(`
                 document.title = "Comprovante_Crediario_${idCurto}";
                 document.documentElement.innerHTML = \`${htmlCupom}\`;
             `);
 
-            // Dispara a impressão física ou virtual
-            //💡 Nota: Mudei silent: true para silent: false temporariamente para que você veja a tela de escolha de impressora do Windows e comprove que o nome do arquivo agora sairá limpo como Comprovante_Crediario_XXXX.pdf!
             workerWindow.webContents.print({ silent: false, printBackground: true }, (success, failureReason) => {
                 if (!success) console.error("Falha ao imprimir:", failureReason);
                 workerWindow.close();
