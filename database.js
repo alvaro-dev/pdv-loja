@@ -6,6 +6,7 @@ const crypto = require('crypto');
 const UsuarioRepository = require('./repositories/UsuarioRepository');
 const ClienteRepository = require('./repositories/ClienteRepository');
 const VendaRepository = require('./repositories/VendaRepository');
+const CaixaRepository = require('./repositories/CaixaRepository');
 
 // FUNCAO AUXILIAR: Gera data e hora local da máquina sem distorcao de fuso horario (UTC)
 function obterDataHoraLocalANSI(dataBase = new Date()) {
@@ -49,6 +50,7 @@ class DatabaseManager {
         this.usuarios = new UsuarioRepository(this);
         this.clientes = new ClienteRepository(this);
         this.vendas = new VendaRepository(this);
+        this.caixas = new CaixaRepository(this);
 
         // No Windows, salva o arquivo .db na pasta AppData do usuário
         this.sqlitePath = path.join(app.getPath('userData'), 'pdv_local.db');
@@ -497,112 +499,57 @@ class DatabaseManager {
         try {
             if (this.isOnline) {
                 try {
-                    console.log("[BANCO] Verificando status de abertura do caixa no PostgreSQL externo...");
-                    // Aplicado o cast explicito ::uuid para garantir a compatibilidade com o tipo estrito do Postgres
-                    const query = `SELECT id FROM movimentos_caixa WHERE caixa_id = $1::uuid AND status = 'A' AND deletado = false LIMIT 1`;
-                    const res = await this.pgClient.query(query, [caixaId]);
-                    return res.rows.length > 0;
+                    console.log("[BANCO] Verificando status de abertura via CaixaRepository (Postgres)...");
+                    return await this.caixas.verificarTurnoAbertoPostgres(caixaId);
                 } catch (err) {
-                    console.error("[ERRO - verificarCaixaAberto (Postgres Remote)]:", err.message);
+                    console.error("[ERRO - verificarCaixaAberto Postgres]:", err.message);
                     this.isOnline = false;
-                    // Nao interrompe o fluxo, deixa seguir para tentar ler a contingencia local abaixo
                 }
             }
             
-            console.log("[BANCO] Consultando status de abertura do caixa na base local SQLite...");
-            return await new Promise((resolve, reject) => {
-                const queryLocal = `SELECT id FROM movimentos_caixa_locais WHERE caixa_id = ? AND status = 'A' AND deletado = 0`;
-                this.sqliteDb.get(queryLocal, [caixaId], (err, row) => {
-                    if (err) {
-                        console.error("[ERRO - verificarCaixaAberto (Query SQLite)]:", err.message);
-                        // Resolve como false em vez de rejeitar para permitir que o fluxo do caixa trate de forma segura
-                        resolve(false);
-                    } else {
-                        const statusAberto = !!row;
-                        console.log(`[BANCO] Validacao concluida. Turno local aberto: ${statusAberto}`);
-                        resolve(statusAberto);
-                    }
-                });
-            });
-
+            console.log("[BANCO] Verificando status de abertura via CaixaRepository (SQLite)...");
+            return await this.caixas.verificarTurnoAbertoSQLite(caixaId);
         } catch (errGlobal) {
-            console.error("[ERRO CRITICO - verificarCaixaAberto FATAL]: Excecao nao tratada na checagem de turno:", errGlobal.message);
+            console.error("[ERRO CRITICO - verificarCaixaAberto FATAL]:", errGlobal.message);
             return false;
         }
     }
 
     async abrirCaixa(caixaId, operadorId, valorAbertura) {
         try {
-            console.log("[BANCO] Iniciando processo de abertura de turno de caixa...");
+            console.log("[BANCO] Iniciando processo de abertura via CaixaRepository...");
             
-            let idMovimento = null;
-            let dataAtual = null;
+            const idMovimento = crypto.randomUUID();
+            const dataAtual = obterDataHoraLocalANSI();
 
-            try {
-                idMovimento = crypto.randomUUID();
-                dataAtual = obterDataHoraLocalANSI();
-            } catch (errParams) {
-                console.error("[ERRO - abrirCaixa (Geracao de Parametros)]:", errParams.message);
-                throw new Error("Falha interna ao gerar metadados para abertura do turno.");
-            }
-
-            // CAPTURA DOS IDS GLOBAIS DE GOVERNANÇA EM MEMÓRIA
             const empIdGlobal = this.tenantEmpresaId;
             const filIdGlobal = this.tenantFilialId;
 
+            const payloadMovimento = { id: idMovimento, caixaId, operadorId, dataAbertura: dataAtual, valorAbertura };
+
             if (this.isOnline) {
                 try {
-                    if (!empIdGlobal) {
-                        throw new Error("Dados de governanca (Empresa ID) ausentes no escopo em memoria.");
-                    }
+                    if (!empIdGlobal) throw new Error("Dados de governança ausentes no escopo.");
 
-                    // Busca a regra de escopo diretamente do cache global em memória
                     const escopoTurnos = this.obterEscopoTabela('movimentos_caixa');
-
-                    // REGRA DE ESCOPO: Se movimentos_caixa for COMPARTILHADO, grava filial_id como NULL
                     const filialPgValor = (escopoTurnos === 'COMPARTILHADO') ? null : filIdGlobal;
 
-                    console.log("[POSTGRES] Inserindo registro de abertura de turno no servidor remoto...");
-                    
-                    // Aplicado o cast explicito ::uuid nos parametros string do Postgres para evitar conflitos de tipagem
-                    const queryPG = `
-                        INSERT INTO movimentos_caixa (id, caixa_id, operador_abertura_id, data_abertura, valor_abertura, status, empresa_id, filial_id)
-                        VALUES ($1::uuid, $2::uuid, $3::uuid, $4::timestamp, $5, $6, $7::uuid, $8::uuid)
-                    `;
-                    await this.pgClient.query(queryPG, [idMovimento, caixaId, operadorId, dataAtual, valorAbertura, 'A', empIdGlobal, filialPgValor]);
+                    await this.caixas.inserirAberturaPostgres(payloadMovimento, empIdGlobal, filialPgValor);
                     console.log("[BANCO] Turno de caixa aberto com sucesso no PostgreSQL.");
                 } catch (err) {
-                    console.error("[BANCO] Erro ao abrir no Postgres, mudando para contingencia offline:", err.message);
+                    console.error("[BANCO] Erro ao abrir no Postgres, recuando para contingência:", err.message);
                     this.isOnline = false;
                 }
             }
 
-            const jaSincronizado = this.isOnline ? 1 : 0; // Identifica se subiu na hora pro Postgres
-
-            console.log("[BANCO] Gravando registro de abertura de turno na base local SQLite...");
-            return await new Promise((resolve, reject) => {
-                const queryLite = `
-                    INSERT INTO movimentos_caixa_locais (id, caixa_id, operador_abertura_id, data_abertura, valor_abertura, status, sincronizado) 
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                `;
-                
-                this.sqliteDb.run(
-                    queryLite, 
-                    [idMovimento, caixaId, operadorId, dataAtual, valorAbertura, 'A', jaSincronizado], 
-                    (err) => {
-                        if (err) {
-                            console.error("[BANCO] Erro critico ao salvar abertura de turno no SQLite:", err.message);
-                            reject(err);
-                        } else {
-                            console.log(`[BANCO] Turno de caixa aberto com sucesso no SQLite (Sincronizado: ${jaSincronizado}).`);
-                            resolve({ status: 'sucesso', id: idMovimento });
-                        }
-                    }
-                );
-            });
+            const jaSincronizado = this.isOnline ? 1 : 0;
+            await this.caixas.inserirAberturaSQLite(payloadMovimento, jaSincronizado);
+            
+            console.log(`[BANCO] Turno aberto com sucesso no SQLite (Sincronizado: ${jaSincronizado}).`);
+            return { status: 'sucesso', id: idMovimento };
 
         } catch (errGlobal) {
-            console.error("[ERRO CRITICO - abrirCaixa FATAL]: Excecao nao tratada na rotina de abertura de turno:", errGlobal.message);
+            console.error("[ERRO CRITICO - abrirCaixa FATAL]:", errGlobal.message);
             throw errGlobal;
         }
     }
