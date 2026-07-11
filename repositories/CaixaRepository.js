@@ -144,6 +144,63 @@ class CaixaRepository {
             });
         });
     }
+
+    /**
+     * Busca o histórico global de turnos finalizados no PostgreSQL (Painel Administrativo)
+     * Permite filtragem dinâmica por intervalo de timestamps locais
+     */
+    async obterHistoricoTurnosPostgres(dataInicio, dataFim) {
+        let query = `
+            SELECT 
+                m.id, 
+                m.caixa_id, 
+                c.descricao AS caixa_nome, 
+                o.nome AS operador_nome, 
+                m.data_abertura, 
+                m.data_fechamento, 
+                m.valor_abertura, 
+                m.valor_fechamento,
+                m.valor_contado,
+                m.diferenca
+            FROM movimentos_caixa m
+            JOIN caixas c ON c.id = m.caixa_id AND c.deletado = false
+            JOIN usuarios o ON o.id = m.operador_abertura_id AND o.deletado = false
+            WHERE m.status = 'F' AND m.deletado = false
+        `;
+
+        const parametros = [];
+
+        if (dataInicio && dataFim) {
+            parametros.push(`${dataInicio} 00:00:00`);
+            parametros.push(`${dataFim} 23:59:59`);
+            query += ` AND m.data_fechamento >= $1::timestamp AND m.data_fechamento <= $2::timestamp`;
+        }
+
+        query += ` ORDER BY m.data_fechamento DESC LIMIT 100`;
+
+        const res = await this.db.pgClient.query(query, parametros);
+        return res.rows;
+    }
+
+    /**
+     * Extrai o extrato estrito e detalhado de lançamentos do turno no PostgreSQL
+     * aplicando o isolamento baseado nas globais de governança (Tenant)
+     */
+    async obterVendasPorPeriodoPostgres(caixaId, dataInicio, dataFim, empresaId, filialId) {
+        const query = `
+            SELECT origem, total, forma_pagamento, descricao_movimento, data_venda, bandeira, parcelas
+            FROM vendas
+            WHERE caixa_id = $1 
+              AND data_venda >= $2::timestamp
+              AND data_venda <= $3::timestamp
+              AND empresa_id = $4
+              AND filial_id = $5
+              AND deletado = false
+            ORDER BY data_venda DESC
+        `;
+        const res = await this.db.pgClient.query(query, [caixaId, dataInicio, dataFim, empresaId, filialId]);
+        return res.rows;
+    }
 }
 
 module.exports = CaixaRepository;

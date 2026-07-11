@@ -967,86 +967,39 @@ class DatabaseManager {
     async obterHistoricoTurnos(dataInicio, dataFim) {
         if (this.isOnline) {
             try {
-                let queryPG = `
-                    SELECT 
-                        m.id, 
-                        m.caixa_id, 
-                        c.descricao AS caixa_nome, 
-                        o.nome AS operador_nome, 
-                        m.data_abertura, 
-                        m.data_fechamento, 
-                        m.valor_abertura, 
-                        m.valor_fechamento,
-                        m.valor_contado,
-                        m.diferenca
-                    FROM movimentos_caixa m
-                    JOIN caixas c ON c.id = m.caixa_id AND c.deletado = false
-                    JOIN usuarios o ON o.id = m.operador_abertura_id AND o.deletado = false
-                    WHERE m.status = 'F' AND m.deletado = false
-                `;
-
-                const parametros = [];
-
-                // 🌟 Filtro Dinâmico: Se o usuário enviou as datas, adiciona a trava de período timestamp
-                if (dataInicio && dataFim) {
-                    // Força abranger desde o primeiro minuto do dia inicial até o último minuto do dia final
-                    parametros.push(`${dataInicio} 00:00:00`);
-                    parametros.push(`${dataFim} 23:59:59`);
-                    queryPG += ` AND m.data_fechamento >= $1::timestamp AND m.data_fechamento <= $2::timestamp`;
-                }
-
-                queryPG += ` ORDER BY m.data_fechamento DESC LIMIT 100`;
-
-                const res = await this.pgClient.query(queryPG, parametros);
-                return res.rows;
+                console.log("[BANCO] Consultando histórico de turnos via CaixaRepository...");
+                return await this.caixas.obterHistoricoTurnosPostgres(dataInicio, dataFim);
             } catch (err) {
                 this.isOnline = false;
                 throw new Error("Conexão perdida com o servidor Linux PostgreSQL.");
             }
         }
-        
         throw new Error("O sistema encontra-se em modo de contingência offline.");
     }
 
     async obterVendasPorPeriodo(caixaId, dataAbertura, dataFechamento) {
-        // Função para extrair o carimbo de data/hora regional exato sem converter fuso horário
+        // Função utilitária mantida idêntica para higienizar strings de timestamps locais da máquina
         const extrairTimestampLocal = (dataStr) => {
             if (!dataStr || dataStr === 'N/A' || dataStr === 'Finalizado') return null;
-            
             try {
-                // Se já vier no formato BR "dd/mm/aaaa, hh:mm:ss", converte direto
                 if (dataStr.includes(',')) {
                     const [data, hora] = dataStr.split(', ');
                     const [dia, mes, ano] = data.split('/');
                     return `${ano}-${mes}-${dia} ${hora}`;
                 }
-
-                // Cria o objeto de data baseado na string por extenso do JavaScript
                 const d = new Date(dataStr);
                 if (isNaN(d.getTime())) return null;
-
-                // Extrai os dados locais da máquina (fuso regional correto)
-                const ano = d.getFullYear();
-                const mes = String(d.getMonth() + 1).padStart(2, '0');
-                const dia = String(d.getDate()).padStart(2, '0');
-                const hora = String(d.getHours()).padStart(2, '0');
-                const minuto = String(d.getMinutes()).padStart(2, '0');
-                const segundo = String(d.getSeconds()).padStart(2, '0');
-
-                return `${ano}-${mes}-${dia} ${hora}:${minuto}:${segundo}`;
-            } catch (e) {
-                return null;
-            }
+                return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`;
+            } catch (e) { return null; }
         };
 
         const dataInicioClean = extrairTimestampLocal(dataAbertura);
         const dataFimClean = extrairTimestampLocal(dataFechamento);
 
-        console.log(`[POSTGRES] Buscando período estrito: Inicial: ${dataInicioClean} | Final: ${dataFimClean}`);
+        console.log(`[BANCO] Buscando período estrito via CaixaRepository: ${dataInicioClean} até ${dataFimClean}`);
 
         if (this.isOnline) {
             try {
-                // CAPTURA DOS IDS GLOBAIS DE GOVERNANÇA EM MEMÓRIA (REPLACES A QUERY ANTIGA)
                 const empIdGlobal = this.tenantEmpresaId;
                 const filIdGlobal = this.tenantFilialId;
 
@@ -1054,22 +1007,9 @@ class DatabaseManager {
                     throw new Error('Dados de governança (Empresa ID) ausentes no escopo em memória.');
                 }
 
-                // Query limpa, precisa e livre de INTERVALs sobrepostos utilizando as globais estáveis
-                const queryPG = `
-                    SELECT origem, total, forma_pagamento, descricao_movimento, data_venda, bandeira, parcelas
-                    FROM vendas
-                    WHERE caixa_id = $1 
-                      AND data_venda >= $2::timestamp
-                      AND data_venda <= $3::timestamp
-                      AND empresa_id = $4
-                      AND filial_id = $5
-                      AND deletado = false
-                    ORDER BY data_venda DESC
-                `;
-                const res = await this.pgClient.query(queryPG, [caixaId, dataInicioClean, dataFimClean, empIdGlobal, filIdGlobal]);
-                
-                this.isOnline = true;
-                return res.rows;
+                return await this.caixas.obterVendasPorPeriodoPostgres(
+                    caixaId, dataInicioClean, dataFimClean, empIdGlobal, filIdGlobal
+                );
             } catch (err) {
                 console.error("ERRO NO EXTRACT PDV POSTGRES:", err.message);
                 throw err;
