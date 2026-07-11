@@ -201,6 +201,72 @@ class CaixaRepository {
         const res = await this.db.pgClient.query(query, [caixaId, dataInicio, dataFim, empresaId, filialId]);
         return res.rows;
     }
+
+    /**
+     * Realiza a auditoria de contagem total e pendente de registros no SQLite local
+     */
+    async obterStatusSincronizacaoSQLite() {
+        const tabelas = {
+            vendas: 'vendas_locais',
+            turnos: 'movimentos_caixa_locais',
+            recebiveis: 'recebiveis_cartao_locais',
+            crediario: 'contas_a_receber_locais'
+        };
+        const resultado = {};
+
+        for (const [chave, nomeTabela] of Object.entries(tabelas)) {
+            resultado[chave] = await new Promise((resolve) => {
+                this.db.sqliteDb.get(
+                    `SELECT COUNT(*) as total, SUM(CASE WHEN sincronizado = 0 THEN 1 ELSE 0 END) as pendentes FROM ${nomeTabela}`,
+                    [],
+                    (err, row) => {
+                        if (err) resolve({ total: 0, pendentes: 0 });
+                        else resolve({ total: row ? row.total : 0, pendentes: row ? (row.pendentes || 0) : 0 });
+                    }
+                );
+            });
+        }
+        return resultado;
+    }
+
+    /**
+     * Métodos auxiliares de coleta e atualização para a Sincronização Manual (SQLite)
+     */
+    async obterVendasPendentesManual() {
+        return new Promise((resolve) => {
+            this.db.sqliteDb.all(`SELECT * FROM vendas_locais WHERE sincronizado = 0`, [], (err, rows) => resolve(rows || []));
+        });
+    }
+
+    async obterTurnosPendentesManual() {
+        return new Promise((resolve) => {
+            this.db.sqliteDb.all(`SELECT * FROM movimentos_caixa_locais WHERE sincronizado = 0`, [], (err, rows) => resolve(rows || []));
+        });
+    }
+
+    async obterRecebiveisPendentesManual() {
+        return new Promise((resolve) => {
+            this.db.sqliteDb.all(`SELECT * FROM recebiveis_cartao_locais WHERE sincronizado = 0`, [], (err, rows) => resolve(rows || []));
+        });
+    }
+
+    async obterCrediariosPendentesManual() {
+        return new Promise((resolve) => {
+            this.db.sqliteDb.all(`SELECT * FROM contas_a_receber_locais WHERE sincronizado = 0`, [], (err, rows) => resolve(rows || []));
+        });
+    }
+
+    async obterMetadadosVendaPai(vendaId) {
+        return new Promise((resolve) => {
+            this.db.sqliteDb.get(`SELECT data_venda, parcelas FROM vendas_locais WHERE id = ?`, [vendaId], (err, row) => resolve(row || null));
+        });
+    }
+
+    async obterIndiceOrdemParcela(vendaId, contaId) {
+        return new Promise((resolve) => {
+            this.db.sqliteDb.get(`SELECT COUNT(*) as indexador FROM contas_a_receber_locais WHERE venda_id = ? AND id <= ?`, [vendaId, contaId], (err, row) => resolve(row ? row.indexador : 1));
+        });
+    }
 }
 
 module.exports = CaixaRepository;

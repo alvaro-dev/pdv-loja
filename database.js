@@ -1022,46 +1022,10 @@ class DatabaseManager {
     // 📊 Retorna o total de linhas e itens pendentes de sincronização do SQLite local
     async obterStatusSincronizacao() {
         try {
-            console.log("[BANCO] Iniciando contagem dos status de sincronizacao local...");
-            
-            const tabelas = {
-                vendas: 'vendas_locais',
-                turnos: 'movimentos_caixa_locais',
-                recebiveis: 'recebiveis_cartao_locais',
-                crediario: 'contas_a_receber_locais'
-            };
-            const resultado = {};
-
-            for (const [chave, nomeTabela] of Object.entries(tabelas)) {
-                try {
-                    resultado[chave] = await new Promise((resolve, reject) => {
-                        this.sqliteDb.get(
-                            `SELECT COUNT(*) as total, SUM(CASE WHEN sincronizado = 0 THEN 1 ELSE 0 END) as pendentes FROM ${nomeTabela}`,
-                            [],
-                            (err, row) => {
-                                if (err) {
-                                    reject(err);
-                                } else {
-                                    resolve({
-                                        total: row ? row.total : 0,
-                                        pendentes: row ? (row.pendentes || 0) : 0
-                                    });
-                                }
-                            }
-                        );
-                    });
-                } catch (errTable) {
-                    console.error(`[ERRO - obterStatusSincronizacao (Tabela: ${nomeTabela})]:`, errTable.message);
-                    // Define valor zerado seguro em caso de erro na tabela para nao corromper o retorno das demais
-                    resultado[chave] = { total: 0, pendentes: 0 };
-                }
-            }
-
-            console.log("[BANCO] Auditoria de sincronizacao concluida com sucesso.");
-            return resultado;
-
+            console.log("[BANCO] Solicitando auditoria de contadores ao CaixaRepository...");
+            return await this.caixas.obterStatusSincronizacaoSQLite();
         } catch (errGlobal) {
-            console.error("[ERRO CRITICO - obterStatusSincronizacao FATAL]: Excecao nao tratada na contagem de pendencias:", errGlobal.message);
+            console.error("[ERRO CRITICO - obterStatusSincronizacao FATAL]:", errGlobal.message);
             return {
                 vendas: { total: 0, pendentes: 0 },
                 turnos: { total: 0, pendentes: 0 },
@@ -1075,38 +1039,24 @@ class DatabaseManager {
     async sincronizarTabelaManual(tipo) {
         try {
             if (!this.isOnline || !this.pgClient) {
-                console.log("[SYNC-MANUAL] Falha: Tentativa de execucao sem conexao ativa com o Postgres.");
                 throw new Error("Sem conexao ativa com o servidor PostgreSQL central.");
             }
             
-            // REAPROVEITAMENTO DAS VARIÁVEIS GLOBAIS DE GOVERNANÇA EM MEMÓRIA
             const empIdGlobal = this.tenantEmpresaId;
             const filIdGlobal = this.tenantFilialId;
 
             if (!empIdGlobal) {
-                console.log("[SYNC-MANUAL] Falha: Parametros de governanca ausentes no escopo.");
-                throw new Error("Erro de escopo: Identificadores de governanca do terminal nao estao carregados na sessao.");
+                throw new Error("Erro de escopo: Identificadores de governanca do terminal nao estao carregados.");
             }
 
             const logs = [];
             logs.push(`[${new Date().toLocaleTimeString()}] 🚀 Iniciando sincronizacao da tabela: ${tipo.toUpperCase()}`);
 
+            // ==========================================
+            // SUB-FLUXO: VENDAS
+            // ==========================================
             if (tipo === 'vendas') {
-                let pendentes = [];
-                try {
-                    console.log("[SYNC-MANUAL] Coletando vendas pendentes no SQLite local...");
-                    pendentes = await new Promise((resolve, reject) => {
-                        this.sqliteDb.all(`SELECT * FROM vendas_locais WHERE sincronizado = 0`, [], (err, rows) => {
-                            if (err) reject(err);
-                            else resolve(rows || []);
-                        });
-                    });
-                } catch (errLite) {
-                    console.error("[ERRO - sincronizarTabelaManual (Ler vendas SQLite)]:", errLite.message);
-                    logs.push(`[ERRO CRITICO] Falha ao ler a tabela vendas_locais: ${errLite.message}`);
-                    throw errLite;
-                }
-
+                const pendentes = await this.caixas.obterVendasPendentesManual();
                 logs.push(`[INFO] Encontrados ${pendentes.length} lancamentos pendentes.`);
                 
                 const escopoVendas = this.obterEscopoTabela('vendas');
@@ -1114,45 +1064,31 @@ class DatabaseManager {
 
                 for (const v of pendentes) {
                     try {
-                        const estaDeletadoPG = (v.deletado === 1);
+                        const payloadVenda = {
+                            id: v.id, caixaId: v.caixa_id, operadorId: v.operador_id,
+                            clienteId: (v.cliente_id === 'CONSUMIDOR-FINAL' || !v.cliente_id) ? '00000000-0000-0000-0000-000000000000' : v.cliente_id,
+                            formaPagamento: v.forma_pagamento, origem: v.origem, total: v.total,
+                            descricaoMovimento: v.descricao_movimento, dataVenda: v.data_venda,
+                            bandeira: v.bandeira, parcelas: v.parcelas
+                        };
 
-                        // Aplicados casts explicitos ::uuid e ::timestamp para blindagem do Postgres
-                        const queryPG = `
-                            INSERT INTO vendas (id, caixa_id, operador_id, cliente_id, forma_pagamento, origem, total, descricao_movimento, data_venda, deletado, bandeira, parcelas, empresa_id, filial_id)
-                            VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5, $6, $7, $8, $9::timestamp, $10::boolean, $11, $12, $13::uuid, $14::uuid)
-                            ON CONFLICT (id) DO UPDATE SET deletado = excluded.deletado
-                        `;
+                        await this.vendas.inserirVendaPaiPostgres(payloadVenda, empIdGlobal, filialPgValor);
+                        if (v.deletado === 1) {
+                            await this.vendas.marcarDeletadaPostgres(v.id);
+                        }
                         
-                        const clientePgValor = (v.cliente_id === 'CONSUMIDOR-FINAL' || !v.cliente_id)
-                            ? '00000000-0000-0000-0000-000000000000' 
-                            : v.cliente_id;
-                                
-                        await this.pgClient.query(queryPG, [v.id, v.caixa_id, v.operador_id, clientePgValor, v.forma_pagamento, v.origem, v.total, v.descricao_movimento, v.data_venda, estaDeletadoPG, v.bandeira, v.parcelas, empIdGlobal, filialPgValor]);
-                        
-                        this.sqliteDb.run(`UPDATE vendas_locais SET sincronizado = 1 WHERE id = ?`, [v.id]);
+                        this.vendas.marcarVendaSincronizada(v.id);
                         logs.push(`[SUCESSO] Lancamento ID ${v.id.substring(0,8)}... espelhado com a nuvem.`);
                     } catch (errLoopVenda) {
-                        console.error(`[ERRO - sincronizarTabelaManual (Lote Venda ID ${v.id})]:`, errLoopVenda.message);
                         logs.push(`[FALHA] Nao foi possivel espelhar a venda ID ${v.id.substring(0,8)}: ${errLoopVenda.message}`);
                     }
                 }
             }
+            // ==========================================
+            // SUB-FLUXO: TURNOS
+            // ==========================================
             else if (tipo === 'turnos') {
-                let pendentes = [];
-                try {
-                    console.log("[SYNC-MANUAL] Coletando turnos pendentes no SQLite local...");
-                    pendentes = await new Promise((resolve, reject) => {
-                        this.sqliteDb.all(`SELECT * FROM movimentos_caixa_locais WHERE sincronizado = 0`, [], (err, rows) => {
-                            if (err) reject(err);
-                            else resolve(rows || []);
-                        });
-                    });
-                } catch (errLite) {
-                    console.error("[ERRO - sincronizarTabelaManual (Ler movimentos_caixa SQLite)]:", errLite.message);
-                    logs.push(`[ERRO CRITICO] Falha ao ler a tabela movimentos_caixa_locais: ${errLite.message}`);
-                    throw errLite;
-                }
-
+                const pendentes = await this.caixas.obterTurnosPendentesManual();
                 logs.push(`[INFO] Encontrados ${pendentes.length} fechamentos de turnos pendentes.`);
 
                 const escopoTurnos = this.obterEscopoTabela('movimentos_caixa');
@@ -1160,41 +1096,34 @@ class DatabaseManager {
 
                 for (const t of pendentes) {
                     try {
-                        // Aplicados casts explicitos ::uuid, ::timestamp e ::boolean para blindagem do Postgres
-                        const queryPG = `
-                            INSERT INTO movimentos_caixa (id, caixa_id, operador_abertura_id, operador_fechamento_id, data_abertura, data_fechamento, valor_abertura, valor_fechamento, valor_contado, diferenca, status, deletado, empresa_id, filial_id)
-                            VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5::timestamp, $6::timestamp, $7, $8, $9, $10, $11, $12::boolean, $13::uuid, $14::uuid)
-                            ON CONFLICT (id) DO UPDATE SET status = excluded.status, data_fechamento = excluded.data_fechamento, valor_fechamento = excluded.valor_fechamento, valor_contado = excluded.valor_contado, diferenca = excluded.diferenca
-                        `;
-                        await this.pgClient.query(queryPG, [t.id, t.caixa_id, t.operador_abertura_id, t.operador_fechamento_id, t.data_abertura, t.data_fechamento, t.valor_abertura, t.valor_fechamento, t.valor_contado, t.diferenca, t.status, t.deletado === 1, empIdGlobal, filialPgValor]);
-                        
+                        const payloadFechamento = {
+                            movimentoId: t.id, operadorFechamentoId: t.operador_fechamento_id,
+                            valorFechamento: t.valor_fechamento, valorContado: t.valor_contado, diferenca: t.diferenca
+                        };
+
+                        await this.caixas.inserirAberturaPostgres({
+                            id: t.id, caixaId: t.caixa_id, operadorId: t.operador_abertura_id, dataAbertura: t.data_abertura, valorAbertura: t.valor_abertura
+                        }, empIdGlobal, filialPgValor);
+
+                        if (t.status === 'F') {
+                            await this.caixas.atualizarFechamentoPostgres(payloadFechamento, t.data_fechamento);
+                        }
+
                         await new Promise((resolve) => {
                             this.sqliteDb.run(`UPDATE movimentos_caixa_locais SET sincronizado = 1 WHERE id = ?`, [t.id], () => resolve());
                         });
 
-                        logs.push(`[SUCESSO] Turno ID ${t.id.substring(0,8)}... atualizado no PostgreSQL e marcado localmente.`);
+                        logs.push(`[SUCESSO] Turno ID ${t.id.substring(0,8)}... atualizado no PostgreSQL.`);
                     } catch (errLoopTurno) {
-                        console.error(`[ERRO - sincronizarTabelaManual (Lote Turno ID ${t.id})]:`, errLoopTurno.message);
                         logs.push(`[FALHA] Nao foi possivel espelhar o turno ID ${t.id.substring(0,8)}: ${errLoopTurno.message}`);
                     }
                 }
             }
+            // ==========================================
+            // SUB-FLUXO: RECEBÍVEIS CARTÃO
+            // ==========================================
             else if (tipo === 'recebiveis') {
-                let pendentes = [];
-                try {
-                    console.log("[SYNC-MANUAL] Coletando recebiveis pendentes no SQLite local...");
-                    pendentes = await new Promise((resolve, reject) => {
-                        this.sqliteDb.all(`SELECT * FROM recebiveis_cartao_locais WHERE sincronizado = 0`, [], (err, rows) => {
-                            if (err) reject(err);
-                            else resolve(rows || []);
-                        });
-                    });
-                } catch (errLite) {
-                    console.error("[ERRO - sincronizarTabelaManual (Ler recebiveis SQLite)]:", errLite.message);
-                    logs.push(`[ERRO CRITICO] Falha ao ler a tabela recebiveis_cartao_locais: ${errLite.message}`);
-                    throw errLite;
-                }
-
+                const pendentes = await this.caixas.obterRecebiveisPendentesManual();
                 logs.push(`[INFO] Encontrados ${pendentes.length} recebiveis de cartao pendentes.`);
 
                 const escopoRecebiveis = this.obterEscopoTabela('recebiveis_cartao');
@@ -1202,37 +1131,19 @@ class DatabaseManager {
 
                 for (const r of pendentes) {
                     try {
-                        // Aplicados casts explicitos ::uuid, ::timestamp e ::boolean para blindagem do Postgres
-                        const queryPG = `
-                            INSERT INTO recebiveis_cartao (id, venda_id, caixa_id, parcela_numero, valor_parcela, data_prevista_recebimento, status, deletado, empresa_id, filial_id)
-                            VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5, $6::timestamp, $7, $8::boolean, $9::uuid, $10::uuid)
-                            ON CONFLICT (id) DO UPDATE SET status = excluded.status, deletado = excluded.deletado
-                        `;
-                        await this.pgClient.query(queryPG, [r.id, r.venda_id, r.caixa_id, r.parcela_numero, r.valor_parcela, r.data_prevista_recebimento, r.status, r.deletado === 1, empIdGlobal, filialRecPgValor]);
-                        this.sqliteDb.run(`UPDATE recebiveis_cartao_locais SET sincronizado = 1 WHERE id = ?`, [r.id]);
+                        await this.vendas.inserirRecebivelCartaoPostgres(r, empIdGlobal, filialRecPgValor);
+                        this.vendas.marcarRecebivelCartaoSincronizado(r.id);
                         logs.push(`[SUCESSO] Recebivel ID ${r.id.substring(0,8)}... espelhado com a nuvem.`);
                     } catch (errLoopRec) {
-                        console.error(`[ERRO - sincronizarTabelaManual (Lote Recebivel ID ${r.id})]:`, errLoopRec.message);
                         logs.push(`[FALHA] Nao foi possivel espelhar o recebivel ID ${r.id.substring(0,8)}: ${errLoopRec.message}`);
                     }
                 }
             }
+            // ==========================================
+            // SUB-FLUXO: CREDIÁRIO
+            // ==========================================
             else if (tipo === 'crediario') {
-                let pendentes = [];
-                try {
-                    console.log("[SYNC-MANUAL] Coletando crediarios pendentes no SQLite local...");
-                    pendentes = await new Promise((resolve, reject) => {
-                        this.sqliteDb.all(`SELECT * FROM contas_a_receber_locais WHERE sincronizado = 0`, [], (err, rows) => {
-                            if (err) reject(err);
-                            else resolve(rows || []);
-                        });
-                    });
-                } catch (errLite) {
-                    console.error("[ERRO - sincronizarTabelaManual (Ler crediario SQLite)]:", errLite.message);
-                    logs.push(`[ERRO CRITICO] Falha ao ler a tabela contas_a_receber_locais: ${errLite.message}`);
-                    throw errLite;
-                }
-
+                const pendentes = await this.caixas.obterCrediariosPendentesManual();
                 logs.push(`[INFO] Encontrados ${pendentes.length} titulos de parcelas de crediario pendentes.`);
 
                 const escopoCR = this.obterEscopoTabela('contas_a_receber');
@@ -1240,34 +1151,16 @@ class DatabaseManager {
 
                 for (const c of pendentes) {
                     try {
-                        // Captura metadados da venda pai para estruturar o total de parcelamento correto
-                        const vendaPai = await new Promise((resolve) => {
-                            this.sqliteDb.get(`SELECT data_venda, parcelas FROM vendas_locais WHERE id = ?`, [c.venda_id], (err, row) => resolve(row));
-                        });
+                        const vendaPai = await this.caixas.obterMetadadosVendaPai(c.venda_id);
                         const dataEmissao = vendaPai ? vendaPai.data_venda : obterDataHoraLocalANSI();
                         const totalParcelasVenda = vendaPai ? vendaPai.parcelas : 1;
 
-                        // Descobre a numeração de parcela fazendo contagem de registros anteriores da mesma venda
-                        const ordemParcela = await new Promise((resolve) => {
-                            this.sqliteDb.get(`SELECT COUNT(*) as indexador FROM contas_a_receber_locais WHERE venda_id = ? AND id <= ?`, [c.venda_id, c.id], (err, row) => resolve(row ? row.indexador : 1));
-                        });
+                        const ordemParcela = await this.caixas.obterIndiceOrdemParcela(c.venda_id, c.id);
 
-                        // Aplicados casts explicitos ::uuid, ::timestamp, ::date e ::boolean para blindagem do Postgres
-                        const queryCRPostgres = `
-                            INSERT INTO contas_a_receber (id, empresa_id, filial_id, venda_id, cliente_id, parcela_numero, total_parcelas, data_emissao, data_vencimento, valor_original, valor_juros, valor_multa, valor_pago, saldo_restante, status, deletado)
-                            VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5::uuid, $6, $7, $8::timestamp, $9::date, $10, 0.00, 0.00, 0.00, $11, 'P', false)
-                            ON CONFLICT (id) DO UPDATE SET status = excluded.status
-                        `;
-                        
-                        await this.pgClient.query(queryCRPostgres, [
-                            c.id, empIdGlobal, filialCRPgValor, c.venda_id, c.cliente_id, 
-                            ordemParcela, totalParcelasVenda, dataEmissao, c.data_vencimento, c.valor_original, c.valor_original
-                        ]);
-                        
-                        this.sqliteDb.run(`UPDATE contas_a_receber_locais SET sincronizado = 1 WHERE id = ?`, [c.id]);
+                        await this.vendas.inserirContaReceberPostgres(c, ordemParcela, totalParcelasVenda, dataEmissao, empIdGlobal, filialCRPgValor);
+                        this.vendas.marcarContaReceberSincronizada(c.id);
                         logs.push(`[SUCESSO] Parcela ${ordemParcela}/${totalParcelasVenda} do Titulo ID ${c.id.substring(0,8)}... espelhada na nuvem.`);
                     } catch (errLoopCR) {
-                        console.error(`[ERRO - sincronizarTabelaManual (Lote Crediario ID ${c.id})]:`, errLoopCR.message);
                         logs.push(`[FALHA] Nao foi possivel espelhar a parcela do crediario ID ${c.id.substring(0,8)}: ${errLoopCR.message}`);
                     }
                 }
@@ -1277,8 +1170,8 @@ class DatabaseManager {
             return logs;
 
         } catch (errGlobal) {
-            console.error("[ERRO CRITICO - sincronizarTabelaManual FATAL]: Excecao nao tratada na rotina de sincronismo manual:", errGlobal.message);
-            return [`[ERRO FATAL - ${new Date().toLocaleTimeString()}] Ocorreu um erro geral nao tratado: ${errGlobal.message}`];
+            console.error("[ERRO CRITICO - sincronizarTabelaManual FATAL]:", errGlobal.message);
+            return [`[ERRO FATAL - ${new Date().toLocaleTimeString()}] Ocorreu um erro geral: ${errGlobal.message}`];
         }
     }
 
