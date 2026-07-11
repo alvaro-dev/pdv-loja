@@ -287,6 +287,42 @@ class VendaRepository {
             });
         });
     }
+
+    /**
+     * Busca os dados da venda cruzados com o cliente para a emissão do cupom
+     */
+    async obterDadosCupomCrediario(vendaId) {
+        return new Promise((resolve, reject) => {
+            const query = `
+                SELECT v.*, c.nome as cliente_nome, c.cpf as cliente_cpf 
+                FROM vendas_locais v 
+                JOIN clientes_locais c ON c.id = v.cliente_id 
+                WHERE v.id = ?
+            `;
+            this.db.sqliteDb.get(query, [vendaId], (err, row) => {
+                if (err) reject(err);
+                else resolve(row || null);
+            });
+        });
+    }
+
+    /**
+     * Busca todas as faturas em aberto geradas por uma venda específica
+     */
+    async obterParcelasCupomCrediario(vendaId) {
+        return new Promise((resolve, reject) => {
+            const query = `
+                SELECT data_vencimento, valor_original 
+                FROM contas_a_receber_locais 
+                WHERE venda_id = ? 
+                ORDER BY data_vencimento ASC
+            `;
+            this.db.sqliteDb.all(query, [vendaId], (err, rows) => {
+                if (err) reject(err);
+                else resolve(rows || []);
+            });
+        });
+    }
 }
 
 module.exports = VendaRepository;

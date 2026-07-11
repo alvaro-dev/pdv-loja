@@ -1183,23 +1183,22 @@
                     statusDiv.className = resposta.modo.includes('ONLINE') ? 'msg-box online' : 'msg-box offline';
                     
                     // 🌟 NOVA ABORDAGEM ASSÍNCRONA COM MODAL HTML
+                    // 🌟 MODIFICADO: Removeu qualquer query local e passou a responsabilidade pro Main IPC
                     if (formaPagamento === 'CR') {
                         const modal = document.getElementById('modalImpressaoCrediario');
                         const btnSim = document.getElementById('btnModalSimPrint');
                         const btnNao = document.getElementById('btnModalNaoPrint');
                         
-                        // Exibe o modal na tela usando Flexbox para centralizar
                         modal.style.display = 'flex';
                         
-                        // Configura a ação do botão SIM
                         btnSim.onclick = () => {
+                            // Envia apenas o ID da venda. O processo principal se vira para buscar os dados
                             ipcRenderer.send('imprimir-comprovante-crediario', resposta.id);
-                            modal.style.display = 'none'; // Fecha o modal
+                            modal.style.display = 'none';
                         };
                         
-                        // Configura a ação do botão NÃO
                         btnNao.onclick = () => {
-                            modal.style.display = 'none'; // Apenas fecha o modal
+                            modal.style.display = 'none';
                         };
                     }
 
@@ -1467,13 +1466,13 @@
             }
         }
 
-        // 🎨 FUNÇÃO RESPONSÁVEL POR FATIAR E DESENHAR OS 50 LANÇAMENTOS COM NOME DO CLIENTE E REIMPRESSÃO CR
         // 🎨 FUNÇÃO RESPONSÁVEL POR FATIAR E DESENHAR OS LANÇAMENTOS COM NOME DO CLIENTE E REIMPRESSÃO CR
+        // 🎨 FUNÇÃO REESTRUTURADA: Criação nativa de elementos seguros (Sem onclick chumbado na string)
         function renderizarTabelaLancamentosPrincipal() {
             const corpoTabela = document.getElementById('tabelaLancamentosCorpo');
             if (!corpoTabela) return;
 
-            // 🌟 Injeta dinamicamente a coluna Cliente no cabeçalho do grid
+            // Injeta dinamicamente a coluna Cliente no cabeçalho do grid
             const containerTabela = corpoTabela.closest('table');
             if (containerTabela) {
                 const cabecalho = containerTabela.querySelector('thead tr');
@@ -1534,31 +1533,14 @@
                     estiloColunaCartao = 'color: #2b2b2b; font-style: normal;';
                 }
 
-                // Resgata o nome do cliente obtido no JOIN do banco de dados
                 const clienteNomeResolvido = v.cliente_nome || 'CONSUMIDOR FINAL';
-                
-                // Formatação diferenciada para o nome do cliente se a venda for no Crediário
                 const clienteCelulaExibicao = v.forma_pagamento === 'CR'
                     ? `<b style="color: #0056b3;">${clienteNomeResolvido}</b>`
                     : `<span style="color: #555;">${clienteNomeResolvido}</span>`;
 
                 const descricaoExibicao = v.descricao_movimento || v.descricao || 'Venda de Produtos';
 
-                // Mantido os emojis e ícones nos botões de ação abaixo
-                let botoesAcao = `
-                    <button onclick="dispararExclusao('${v.id}')" style="margin-top: 0; padding: 4px 8px; font-size: 12px; background-color: #dc3545; width: auto; font-weight: normal; border: none; color: white; border-radius: 4px; cursor: pointer;">
-                        🗑️ Excluir
-                    </button>
-                `;
-
-                if (v.forma_pagamento === 'CR') {
-                    botoesAcao += `
-                        <button onclick="reimprimirCrediario('${v.id}')" title="Reimprimir Comprovante / Promissória" style="margin-top: 0; padding: 4px 8px; font-size: 12px; background-color: #28a745; width: auto; font-weight: normal; margin-left: 6px; border: none; color: white; border-radius: 4px; cursor: pointer;">
-                            🖨️
-                        </button>
-                    `;
-                }
-
+                // Criamos a linha física da tabela
                 const linha = document.createElement('tr');
                 linha.innerHTML = `
                     <td style="padding: 8px; border: 1px solid #dee2e6;">${tipo}</td>
@@ -1569,11 +1551,30 @@
                     <td style="padding: 8px; border: 1px solid #dee2e6;">${descricaoExibicao}</td>
                     <td style="padding: 8px; border: 1px solid #dee2e6; ${estiloValor}">R$ ${parseFloat(v.total || v.valor || 0).toFixed(2)}</td>
                     <td style="padding: 8px; border: 1px solid #dee2e6; text-align: center;">
-                        <div style="display: flex; align-items: center; justify-content: center;">
-                            ${botoesAcao}
-                        </div>
+                        <div class="container-acoes-celula" style="display: flex; align-items: center; justify-content: center; gap: 6px;"></div>
                     </td>
                 `;
+
+                // Capturamos a div que guardará os botões nesta linha específica
+                const containerAcoes = linha.querySelector('.container-acoes-celula');
+
+                // 🌟 Criando o botão de Exclusão de forma nativa e segura
+                const btnExcluir = document.createElement('button');
+                btnExcluir.innerText = '🗑️ Excluir';
+                btnExcluir.style = "margin-top: 0; padding: 4px 8px; font-size: 12px; background-color: #dc3545; width: auto; font-weight: normal; border: none; color: white; border-radius: 4px; cursor: pointer;";
+                btnExcluir.addEventListener('click', () => dispararExclusao(v.id)); // Event listener direto!
+                containerAcoes.appendChild(btnExcluir);
+
+                // 🌟 Criando o botão de Impressão (Apenas para Crediário) de forma nativa
+                if (v.forma_pagamento === 'CR') {
+                    const btnImprimir = document.createElement('button');
+                    btnImprimir.innerText = '🖨️';
+                    btnImprimir.title = 'Reimprimir Comprovante / Promissória';
+                    btnImprimir.style = "margin-top: 0; padding: 4px 8px; font-size: 12px; background-color: #28a745; width: auto; font-weight: normal; border: none; color: white; border-radius: 4px; cursor: pointer;";
+                    btnImprimir.addEventListener('click', () => reimprimirCrediario(v.id)); // Event listener direto!
+                    containerAcoes.appendChild(btnImprimir);
+                }
+
                 corpoTabela.appendChild(linha);
             });
         }
@@ -1902,12 +1903,8 @@
             const idAlvo = (caixaId && caixaId !== 'undefined' && caixaId !== '') ? caixaId : document.getElementById('caixaId').value;
             const statusDiv = document.getElementById('statusLog');
             
-            // 🌟 CORREÇÃO SELETOR: Procura primeiro por um ID, se não achar, usa o outro
-            let corpoDetalhe = document.getElementById('tabelaDetalheTurnoCorpo');
-            if (!corpoDetalhe) {
-                corpoDetalhe = document.getElementById('tabelaDetailTurnoCorpo');
-            }
-            
+            // 🌟 MODIFICADO: Captura limpa, sem fallback ou rechecagem de id duplicado
+            const corpoDetalhe = document.getElementById('tabelaDetalheTurnoCorpo');
             if (corpoDetalhe) {
                 corpoDetalhe.innerHTML = `<tr><td colspan="8" style="padding: 10px; text-align: center; color: #666;">Carregando extrato do turno...</td></tr>`;
             }
@@ -1943,13 +1940,10 @@
 
         // Função responsável por fatiar e desenhar as 20 linhas do extrato operacional
         function renderizarTabelaDetalhe() {
-            // 🌟 CORREÇÃO SELETOR: Garante a seleção do container correto também na paginação
-            let corpoDetalhe = document.getElementById('tabelaDetalheTurnoCorpo');
-            if (!corpoDetalhe) {
-                corpoDetalhe = document.getElementById('tabelaDetailTurnoCorpo');
-            }
-
-            if (!corpoDetalhe) return; // Aborta se o elemento não existir no HTML
+            // 🌟 MODIFICADO: Captura direta
+            const corpoDetalhe = document.getElementById('tabelaDetalheTurnoCorpo');
+            if (!corpoDetalhe) return; 
+            
             corpoDetalhe.innerHTML = '';
 
             if (dadosDetalheCompletos.length === 0) {
