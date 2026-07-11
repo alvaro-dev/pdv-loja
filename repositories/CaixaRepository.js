@@ -318,6 +318,22 @@ class CaixaRepository {
         const resultado = await this.db.pgClient.query(query);
         return resultado.rows;
     }
+
+    /**
+     * Atualiza a flag de sincronização de um turno específico no SQLite local
+     */
+    async marcarTurnoSincronizado(id) {
+        return new Promise((resolve, reject) => {
+            this.db.sqliteDb.run(
+                `UPDATE movimentos_caixa_locais SET sincronizado = 1 WHERE id = ?`,
+                [id],
+                (err) => {
+                    if (err) reject(err);
+                    else resolve();
+                }
+            );
+        });
+    }
 }
 
 module.exports = CaixaRepository;

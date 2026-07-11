@@ -635,6 +635,7 @@ class DatabaseManager {
     async verificarConexaoPostgres() {
         if (!this.pgClient) return;
         try {
+            // Executa um ping de infraestrutura puro para testar o socket de rede
             await this.pgClient.query('SELECT 1');
             if (!this.isOnline) {
                 console.log("[CONEXÃO] Redes restabelecidas! O PDV voltou a ficar ONLINE.");
@@ -1040,9 +1041,8 @@ class DatabaseManager {
                             await this.caixas.atualizarFechamentoPostgres(payloadFechamento, t.data_fechamento);
                         }
 
-                        await new Promise((resolve) => {
-                            this.sqliteDb.run(`UPDATE movimentos_caixa_locais SET sincronizado = 1 WHERE id = ?`, [t.id], () => resolve());
-                        });
+                        // 🌟 CORRIGIDO: Removido o sqliteDb.run cru e substituído pelo método do repositório
+                        await this.caixas.marcarTurnoSincronizado(t.id);
 
                         logs.push(`[SUCESSO] Turno ID ${t.id.substring(0,8)}... atualizado no PostgreSQL.`);
                     } catch (errLoopTurno) {
