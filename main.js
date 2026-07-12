@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow, ipcMain } = require('electron'); // 🔒 CORRIGIDO: Única declaração de escopo necessária
 const db = require('./database');
 const vendaService = require('./services/VendaService');
 const configService = require('./services/ConfigService'); // 🌟 NOVA CAMADA CENTRALIZADA
@@ -114,32 +114,184 @@ ipcMain.handle('obter-lembrete-login', async () => {
     } catch (err) { return { status: 'erro' }; }
 });
 
-// 🌟 ALTERADO PARA HANDLE: Impressão assíncrona não bloqueante e resiliente
-ipcMain.on('imprimir-comprovante-crediario', async (event, vendaId) => {
+// 🌟 CORRIGIDO E ATIVADO: Impressão assíncrona executando sem travas de concorrência
+// 🌟 CORRIGIDO: Layout idêntico ao modelo físico anexado (Bobina Térmica 80mm)
+ipcMain.handle('imprimir-comprovante-crediario', async (event, vendaId) => {
     try {
-        // 🚀 Busca os dados encapsulados através dos repositórios
+        console.log(`[MAIN] Capturando dados para cupom de crediário. ID: ${vendaId}`);
         const venda = await db.vendas.obterDadosCupomCrediario(vendaId);
-        if (!venda) return;
+        if (!venda) {
+            console.error(`[MAIN] Venda com ID ${vendaId} não foi localizada para impressão.`);
+            return { status: 'erro', mensagem: 'Venda não localizada.' };
+        }
 
         const parcelas = await db.vendas.obterParcelasCupomCrediario(vendaId);
-
-        let workerWindow = new BrowserWindow({ show: false, webPreferences: { nodeIntegration: true, contextIsolation: false } });
         const idCurto = venda.id.substring(0, 8);
         
-        // ... (Mantém a montagem da string htmlCupom idêntica utilizando as variáveis venda e parcelas) ...
+        // Formata a data e hora de venda no padrão do anexo
+        const dataVendaFormatada = new Date(venda.data_venda || Date.now())
+            .toLocaleString('pt-BR', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' })
+            .replace(',', '');
 
-        workerWindow.loadURL('about:blank');
+        // 🖨️ MONTAGEM DO HTML COM OS ESTILOS VISUAIS EXATOS DO CUPOM ANEXADO
+        let htmlCupom = `
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <style>
+                @page { margin: 0; }
+                body {
+                    font-family: 'Courier New', Courier, monospace;
+                    width: 290px;
+                    margin: 0;
+                    padding: 10px;
+                    font-size: 12px;
+                    line-height: 1.3;
+                    color: #000000;
+                    background-color: #ffffff;
+                }
+                .text-center { text-align: center; }
+                .text-right { text-align: right; }
+                .bold { font-weight: bold; }
+                .divisor {
+                    border-top: 1px dashed #000000;
+                    margin: 8px 0;
+                }
+                .tabela-parcelas {
+                    width: 100%;
+                    border-collapse: collapse;
+                    margin-top: 5px;
+                }
+                .tabela-parcelas th, .tabela-parcelas td {
+                    padding: 2px 0;
+                    font-size: 12px;
+                }
+                .termo-texto {
+                    text-align: justify;
+                    font-size: 11px;
+                    line-height: 1.4;
+                    margin-top: 10px;
+                }
+                .linha-assinatura {
+                    margin-top: 45px;
+                    border-top: 1px solid #000000;
+                    width: 85%;
+                    margin-left: auto;
+                    margin-right: auto;
+                }
+            </style>
+        </head>
+        <body>
+            <div class="text-center bold" style="font-size: 14px;">GRUPO ALFA VAREJO</div>
+            <div class="text-center">CNPJ: 00.000.000/0001-00</div>
+            <div class="text-center">FILIAL: ALFA MATRIZ</div>
+            
+            <div class="divisor"></div>
+            
+            <div class="text-center bold">COMPROVANTE DE CREDIÁRIO</div>
+            <div class="text-center bold">NOTA PROMISSÓRIA</div>
+            
+            <div class="divisor"></div>
+            
+            <div><span class="bold">DOC Venda:</span> ${idCurto}</div>
+            <div><span class="bold">Data/Hora:</span> ${dataVendaFormatada}</div>
+            
+            <div class="divisor"></div>
+            
+            <div><span class="bold">DEVEDOR:</span> ${venda.cliente_nome || 'Não Informado'}</div>
+            <div><span class="bold">CPF:</span> ${venda.cliente_cpf || 'Não Informado'}</div>
+            
+            <div class="divisor"></div>
+            
+            <div class="bold">EXTRATO DAS PARCELAS:</div>
+            <table class="tabela-parcelas">
+                <thead>
+                    <tr>
+                        <th align="left" style="width: 20%;">Parc.</th>
+                        <th align="center" style="width: 45%;">Vencimento</th>
+                        <th align="right" style="width: 35%;">Valor</th>
+                    </tr>
+                </thead>
+                <tbody>
+        `;
+
+        if (Array.isArray(parcelas) && parcelas.length > 0) {
+            parcelas.forEach((p, idx) => {
+                const dataVenc = new Date(p.data_vencimento).toLocaleDateString('pt-BR');
+                const valorParc = parseFloat(p.valor || 0).toFixed(2);
+                htmlCupom += `
+                    <tr>
+                        <td align="left">${idx + 1}/${parcelas.length}</td>
+                        <td align="center">${dataVenc}</td>
+                        <td align="right">R$ ${valorParc}</td>
+                    </tr>
+                `;
+            });
+        } else {
+            // Fallback caso não venha a listagem fragmentada por algum motivo
+            htmlCupom += `<tr><td colspan="3" class="text-center" style="font-style: italic;">Dados das parcelas indisponíveis</td></tr>`;
+        }
+
+        htmlCupom += `
+                </tbody>
+            </table>
+            
+            <div class="divisor"></div>
+            
+            <div class="text-right bold" style="font-size: 13px;">TOTAL DO DEBITO: R$ ${parseFloat(venda.total || 0).toFixed(2)}</div>
+            
+            <div class="divisor"></div>
+            
+            <div class="termo-texto">
+                <span class="bold">TERMO DE CONFISSÃO DE DÍVIDA:</span> Pelo presente instrumento, confesso e me obrigo de forma irrevogável a pagar livre de despesas a quantia acima discriminada dividida nas respectivas faturas e vencimentos estipulados neste cupom.
+            </div>
+            
+            <div class="linha-assinatura"></div>
+            <div class="text-center bold" style="font-size: 11px; margin-top: 4px;">ASSINATURA DO CLIENTE</div>
+            
+            <br>
+            <div class="text-center" style="font-size: 11px; margin-top: 10px;">Obrigado pela preferência!</div>
+        </body>
+        </html>
+        `;
+
+        // Instancia a janela invisível de renderização técnica (Worker)
+        let workerWindow = new BrowserWindow({ 
+            show: false, 
+            webPreferences: { 
+                nodeIntegration: true, 
+                contextIsolation: false 
+            } 
+        });
+
+        // 🌟 A SOLUÇÃO: Geramos uma Data URL contendo o título correto desde o nascimento da janela
+        const base64Html = Buffer.from(htmlCupom).toString('base64');
+        const dataUrl = `data:text/html;charset=utf-8;base64,${base64Html}`;
+
+        // Carrega o conteúdo passando o título de contingência direto nos parâmetros da URL
+        workerWindow.loadURL(dataUrl);
+
         workerWindow.webContents.on('did-finish-load', async () => {
+            // Força a alteração no escopo do DOM por segurança
             await workerWindow.webContents.executeJavaScript(`
                 document.title = "Comprovante_Crediario_${idCurto}";
-                document.documentElement.innerHTML = \`${htmlCupom}\`;
             `);
-            workerWindow.webContents.print({ silent: false, printBackground: true }, (success) => {
+            
+            // Dispara para a fila do Spooler forçando o nome correto no Job do Sistema Operacional
+            workerWindow.webContents.print({ 
+                silent: true, 
+                printBackground: true,
+                margins: { marginType: 'none' },
+                name: `Comprovante_Crediario_${idCurto}` // Nome do trabalho na fila do Windows/Spooler
+            }, (success) => {
                 workerWindow.close();
             });
         });
+
+        return { status: 'sucesso' };
     } catch (err) {
         console.error("Erro ao processar impressão do crediário:", err.message);
+        return { status: 'erro', mensagem: err.message };
     }
 });
 
@@ -179,14 +331,13 @@ ipcMain.handle('buscar-clientes-pdv', async (e, t) => await db.buscarClientesLoc
 ipcMain.on('fechar-aplicativo', () => app.quit());
 ipcMain.handle('verificar-status-rede-banco', async () => ({ isOnline: db.isOnline, semConfig: !configService.recuperarPropriedadeCriptografada('bancoCriptografado') }));
 
-// 🌟 REINSERIDO: Canal de auditoria do histórico de turnos repassando para o Database Manager
+// 🌟 Canal de auditoria do histórico de turnos repassando para o Database Manager
 ipcMain.handle('obter-historico-turnos', async (event, filtros) => {
     if (!db.isOnline) {
         return { status: 'offline', mensagem: 'O histórico de auditoria global requer conexão ativa com o servidor PostgreSQL.' };
     }
     
     try {
-        // Extrai as datas vindas do front-end. Se não existirem, deixa undefined para o repositório tratar
         const dataInicio = filtros ? filtros.dataInicio : undefined;
         const dataFim = filtros ? filtros.dataFim : undefined;
 
@@ -197,7 +348,7 @@ ipcMain.handle('obter-historico-turnos', async (event, filtros) => {
     }
 });
 
-// 🌟 REINSERIDO: Canal do extrato operacional detalhado de lançamentos do período
+// 🌟 Canal do extrato operacional detalhado de lançamentos do período
 ipcMain.handle('obter-vendas-periodo', async (event, { caixaId, dataAbertura, dataFechamento }) => {
     if (!db.isOnline) {
         return { status: 'offline', margin: 'O extrato detalhado de lançamentos requer conexão ativa com o servidor PostgreSQL.' };
@@ -208,5 +359,31 @@ ipcMain.handle('obter-vendas-periodo', async (event, { caixaId, dataAbertura, da
         return { status: 'sucesso', dados };
     } catch (error) {
         return { status: 'offline', mensagem: error.message };
+    }
+});
+
+ipcMain.handle('inicializar-turno-operador', async (event, { usuario, senha, caixaId, manterConectado }) => {
+    try {
+        const operador = await db.realizarLogin(usuario, senha, caixaId);
+        if (!operador) return { status: 'erro', mensagem: 'Usuário ou senha incorretos.' };
+
+        await configService.salvarPropriedadeCriptografada('lembrarOperadorCriptografado', { usuario, senha });
+
+        const dadosCaixa = await db.obterDadosCaixa(caixaId);
+        const caixaEstaAberto = await db.verificarCaixaAberto(caixaId);
+
+        if (caixaEstaAberto && dadosCaixa) {
+            db.sincronizarOperadores().catch(() => {});
+            db.sincronizarClientes().catch(() => {});
+        }
+
+        return {
+            status: 'sucesso',
+            operador,
+            caixaEstaAberto,
+            dadosCaixa: dadosCaixa || null
+        };
+    } catch (error) {
+        return { status: 'erro', mensagem: error.message };
     }
 });

@@ -188,15 +188,24 @@ class CaixaRepository {
      */
     async obterVendasPorPeriodoPostgres(caixaId, dataInicio, dataFim, empresaId, filialId) {
         const query = `
-            SELECT origem, total, forma_pagamento, descricao_movimento, data_venda, bandeira, parcelas
-            FROM vendas
-            WHERE caixa_id = $1 
-              AND data_venda >= $2::timestamp
-              AND data_venda <= $3::timestamp
-              AND empresa_id = $4
-              AND filial_id = $5
-              AND deletado = false
-            ORDER BY data_venda DESC
+            SELECT 
+                v.origem, 
+                v.total, 
+                v.forma_pagamento, 
+                v.descricao_movimento, 
+                v.data_venda, 
+                v.bandeira, 
+                v.parcelas,
+                COALESCE(c.nome, 'CONSUMIDOR FINAL') as cliente_nome
+            FROM vendas v
+            LEFT JOIN clientes c ON c.id = v.cliente_id
+            WHERE v.caixa_id = $1 
+              AND v.data_venda >= $2::timestamp
+              AND v.data_venda <= $3::timestamp
+              AND v.empresa_id = $4
+              AND v.filial_id = $5
+              AND v.deletado = false
+            ORDER BY v.data_venda DESC
         `;
         const res = await this.db.pgClient.query(query, [caixaId, dataInicio, dataFim, empresaId, filialId]);
         return res.rows;

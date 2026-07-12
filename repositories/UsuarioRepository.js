@@ -65,11 +65,12 @@ class UsuarioRepository {
      * Trava A: Verifica se o caixa possui turno ativo de outro operador (Postgres)
      */
     async obterDonoTurnoAtivoPostgres(caixaId) {
+        // 🌟 CORRIGIDO: Adicionada a cláusula AND que estava ausente e quebrava a conexão no relogin
         const query = `
             SELECT m.operador_abertura_id, o.nome AS dono_nome 
             FROM movimentos_caixa m
             JOIN usuarios o ON o.id = m.operador_abertura_id AND o.deletado = false
-            WHERE m.caixa_id = $1::uuid m.status = 'A' AND m.deletado = false
+            WHERE m.caixa_id = $1::uuid AND m.status = 'A' AND m.deletado = false
             LIMIT 1
         `;
         const res = await this.db.pgClient.query(query, [caixaId]);

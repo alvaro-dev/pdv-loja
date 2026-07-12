@@ -168,30 +168,40 @@
             white-space: nowrap !important;
             padding: 10px 12px !important; /* Melhora o respiro visual */
         }
+
         /* 🌟 NOVO: Alarga o container especificamente na tela de histórico de turnos */
+        /* 🌟 OTIMIZADO: Ajuste rígido de contêiner para evitar estouros */
         #telaHistorico {
-            max-width: 95% !important; /* Totalmente adaptável a qualquer tamanho de monitor */
-            width: 1200px !important;  /* Fornece a largura ideal para as 8 colunas de auditoria */
+            max-width: 98% !important;
+            width: 1200px !important; 
             transition: max-width 0.2s, width 0.2s;
             margin-top: 30px;
+            box-sizing: border-box;
         }
 
-        /* Garante que todas as tabelas internas do painel de histórico usem o novo espaço */
-        #telaHistorico table {
+        /* Tabela inferior de extrato detalhado do turno */
+        #painelDetalheTurno table {
             width: 100% !important;
-            margin-top: 15px;
+            table-layout: fixed !important; /* 🔒 CRÍTICO: Força o navegador a respeitar as larguras em % que definirmos */
+            border-collapse: collapse;
         }
 
-        /* Impede quebras de linha indesejadas dentro das células do histórico */
-        #telaHistorico th, #telaHistorico td {
-            white-space: nowrap !important;
-            padding: 10px 12px !important; /* Aumenta o espaçamento interno para melhorar a leitura */
+        /* Configuração de células padrão da tabela inferior */
+        #painelDetalheTurno th, #painelDetalheTurno td {
+            padding: 8px 6px !important;
+            font-size: 13px;
+            border: 1px solid #dee2e6;
+            text-align: left;
+            box-sizing: border-box;
+            overflow: hidden;
+            text-overflow: ellipsis;
         }
 
-        /* Permite que colunas textuais mais longas quebrem linha se necessário de forma controlada */
-        #telaHistorico td:nth-child(1), #telaHistorico td:nth-child(2) {
+        /* 🌟 QUEBRA DE LINHA DINÂMICA: Permite que Cliente e Descrição usem múltiplas linhas se necessário */
+        #tabelaDetalheTurnoCorpo td.celula-flexivel {
             white-space: normal !important;
-            min-width: 130px;
+            word-wrap: break-word !important;
+            overflow-wrap: break-word !important;
         }
     </style>
 </head>
@@ -242,7 +252,9 @@
         
         <div id="sucessoLogin" class="msg-box online" style="margin-top: 20px;"></div>
         
-        <div id="erroLogin" class="msg-box erro"></div>
+        <div id="erroLogin" class="msg-box erro">
+            <span id="txtErroLoginConteudo"></span>
+        </div>
     </div>
 
     <div id="telaAbertura" class="container login-box">
@@ -254,13 +266,19 @@
             <input type="number" id="valorAbertura" min="0.00" step="0.01" value="0.00" style="font-size: 18px; font-weight: bold; text-align: center;">
         </div>
         <button id="btnConfirmarAbertura" style="background-color: #28a745;">Confirmar Abertura</button>
+
+        <div id="erroAbertura" class="msg-box erro" style="margin-top: 15px; display: none;">
+            <span id="txtErroAberturaConteudo"></span>
+        </div>
     </div>
 
     <!-- ==================== TELA DE FECHAMENTO DE CAIXA ==================== -->
     <div id="telaFechamento" class="container login-box" style="display: none; max-width: 500px;">
         <h2>Fechamento de Caixa</h2>
         
-        <div id="erroFechamento" class="msg-box erro" style="margin-bottom: 15px; margin-top: 0;"></div>
+        <div id="erroFechamento" class="msg-box erro" style="margin-bottom: 15px; margin-top: 0; display: none;">
+            <span id="txtErroFechamentoConteudo"></span>
+        </div>
 
         <div style="background: #f8f9fa; padding: 15px; border-radius: 4px; margin-bottom: 15px; font-size: 15px; text-align: left; border-left: 4px solid #007bff;">
             <div style="margin-bottom: 5px;">💰 Fundo Inicial (Dinheiro): <span id="resumoFundo" style="font-weight: bold;">R$ 0.00</span></div>
@@ -276,7 +294,9 @@
             <label for="valorContadoGaveta" style="color: #856404; font-size: 14px;">🔎 Digite o valor TOTAL em DINHEIRO contado na gaveta:</label>
             <input type="number" id="valorContadoGaveta" min="0.00" step="0.01" value="0.00" style="font-size: 18px; font-weight: bold; text-align: center; border-color: #ffeeba;">
             
-            <div id="resultadoConferencia" style="font-size: 13px; font-weight: bold; text-align: center; margin-top: 10px; display: none;"></div>
+            <div id="resultadoConferencia" style="font-size: 13px; font-weight: bold; text-align: center; margin-top: 10px; display: none;">
+                <span id="txtResultadoConferenciaConteudo"></span>
+            </div>
         </div>
 
         <h3 style="font-size: 15px; text-align: left; margin-bottom: 10px; color: #555;">📋 Resumo por Forma de Pagamento</h3>
@@ -290,13 +310,13 @@
                     <th style="padding: 8px; border: 1px solid #dee2e6; color: #007bff;">Saldo Líquido</th>
                 </tr>
             </thead>
-            <tbody id="tabelaDetalheCorpo">
-                </tbody>
+            <tbody id="tabelaDetalheCorpo"></tbody>
         </table>
 
         <p style="text-align: center; font-weight: bold; color: #dc3545; margin-bottom: 15px;">⚠️ Confirma o encerramento definitivo deste turno?</p>
         <input type="hidden" id="fechamentoMovimentoId">
-        <input type="hidden" id="saldoBrutoOculto"> <div style="display: flex; gap: 15px;">
+        <input type="hidden" id="saldoBrutoOculto"> 
+        <div style="display: flex; gap: 15px;">
             <button id="btnConfirmarFechamento" style="background-color: #dc3545; flex: 1; margin-top: 0;">Sim, Fechar</button>
             <button id="btnCancelarFechamento" style="background-color: #6c757d; flex: 1; margin-top: 0;">Não, Voltar</button>
         </div>
@@ -305,7 +325,9 @@
     <div id="telaHistorico" class="container" style="display: none; max-width: 850px;">
         <h2>📊 Histórico de Turnos Encerrados</h2>
         
-        <div id="erroFiltroHist" class="msg-box erro" style="margin-bottom: 15px; margin-top: 0; font-size: 14px; padding: 10px;"></div>
+        <div id="erroFiltroHist" class="msg-box erro" style="margin-bottom: 15px; margin-top: 0; font-size: 14px; padding: 10px; display: none;">
+            <span id="txtErroFiltroHistConteudo"></span>
+        </div>
 
         <div style="background: #f8f9fa; padding: 15px; border-radius: 6px; margin-bottom: 20px; border: 1px solid #dee2e6; display: flex; gap: 15px; align-items: flex-end; justify-content: center;">
             <div style="flex: 1; min-width: 150px; text-align: left;">
@@ -336,8 +358,7 @@
                     <th style="padding: 8px; border: 1px solid #dee2e6;">Diferença</th>
                 </tr>
             </thead>
-            <tbody id="tabelaHistoricoCorpo">
-                </tbody>
+            <tbody id="tabelaHistoricoCorpo"></tbody>
         </table>
 
         <div style="display: flex; justify-content: center; align-items: center; gap: 15px; margin-top: 15px; margin-bottom: 25px;">
@@ -350,27 +371,26 @@
             <h3 style="font-size: 16px; color: #17a2b8; text-align: left; margin-bottom: 10px;">📋 Extrato de Lançamentos do Turno Selecionado</h3>
             
             <table style="width: 100%; border-collapse: collapse; margin-bottom: 20px; font-size: 14px; text-align: left;">
-            <thead>
-                <tr style="background-color: #e9ecef;">
-                    <th style="padding: 8px; border: 1px solid #dee2e6;">Data Lançamento</th>
-                    <th style="padding: 8px; border: 1px solid #dee2e6;">Hora</th>
-                    <th style="padding: 8px; border: 1px solid #dee2e6;">Fluxo</th>
-                    <th style="padding: 8px; border: 1px solid #dee2e6;">Forma</th>
-                    <th style="padding: 8px; border: 1px solid #dee2e6;">Bandeira</th>
-                    <th style="padding: 8px; border: 1px solid #dee2e6;">Parcelas</th>
-                    <th style="padding: 8px; border: 1px solid #dee2e6;">Descrição / Motivo</th>
-                    <th style="padding: 8px; border: 1px solid #dee2e6; text-align: right;">Valor</th>
-                </tr>
-            </thead>
-            <tbody id="tabelaDetalheTurnoCorpo"></tbody>
-        </table>
+                <thead>
+                    <tr style="background-color: #e9ecef;">
+                        <th style="width: 14%; padding: 8px; border: 1px solid #dee2e6;">Data / Hora</th>
+                        <th style="width: 9%; padding: 8px; border: 1px solid #dee2e6;">Fluxo</th>
+                        <th style="width: 30%; padding: 8px; border: 1px solid #dee2e6;">Cliente</th>
+                        <th style="width: 10%; padding: 8px; border: 1px solid #dee2e6;">Forma</th>
+                        <th style="width: 10%; padding: 8px; border: 1px solid #dee2e6;">Bandeira</th>
+                        <th style="width: 7%; padding: 8px; border: 1px solid #dee2e6; text-align: center;">Parc.</th>
+                        <th style="width: 12%; padding: 8px; border: 1px solid #dee2e6;">Descrição / Motivo</th>
+                        <th style="width: 8%; padding: 8px; border: 1px solid #dee2e6; text-align: right;">Valor</th>
+                    </tr>
+                </thead>
+                <tbody id="tabelaDetalheTurnoCorpo"></tbody>
+            </table>
 
-        <div style="display: flex; justify-content: center; align-items: center; gap: 15px; margin-top: 15px; margin-bottom: 15px;">
-            <button id="btnDetAnterior" style="margin-top: 0; padding: 5px 15px; background-color: #6c757d; font-size: 13px; max-width: 100px;">Anterior</button>
-            <span id="txtPaginaDet" style="font-size: 14px; font-weight: bold; color: #555;">Página 1</span>
-            <button id="btnDetProximo" style="margin-top: 0; padding: 5px 15px; background-color: #6c757d; font-size: 13px; max-width: 100px;">Próximo</button>
-        </div>
-
+            <div style="display: flex; justify-content: center; align-items: center; gap: 15px; margin-top: 15px; margin-bottom: 15px;">
+                <button id="btnDetAnterior" style="margin-top: 0; padding: 5px 15px; background-color: #6c757d; font-size: 13px; max-width: 100px;">Anterior</button>
+                <span id="txtPaginaDet" style="font-size: 14px; font-weight: bold; color: #555;">Página 1</span>
+                <button id="btnDetProximo" style="margin-top: 0; padding: 5px 15px; background-color: #6c757d; font-size: 13px; max-width: 100px;">Próximo</button>
+            </div>
         </div>
     </div>
 
@@ -454,7 +474,9 @@
             
             <div id="sugestoesCliente" style="display: none; position: absolute; width: 100%; background: white; border: 1px solid #ccc; border-radius: 4px; z-index: 2000; box-shadow: 0 4px 8px rgba(0,0,0,0.15); max-height: 200px; overflow-y: auto; box-sizing: border-box;"></div>
             
-            <div id="alertaClienteBloqueado" style="display: none; margin-top: 10px; padding: 10px 14px; background-color: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; border-radius: 4px; font-size: 13px; font-weight: bold; line-height: 1.4;"></div>
+            <div id="alertaClienteBloqueado" style="display: none; margin-top: 10px; padding: 10px 14px; background-color: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; border-radius: 4px; font-size: 13px; font-weight: bold; line-height: 1.4;">
+                <span id="txtAlertaClienteBloqueadoConteudo"></span>
+            </div>
         </div>
         
         <div class="form-group">
@@ -500,7 +522,9 @@
             <input type="number" id="total" class="campo-total" min="0.01" step="0.01" value="0.00">
         </div>
 
-        <div id="statusLog" class="msg-box"></div>
+        <div id="statusLog" class="msg-box">
+            <span id="txtStatusLogConteudo"></span>
+        </div>
 
         <button id="btnRegistrar">Lançar no Caixa</button>
 
@@ -513,6 +537,7 @@
                     <tr style="background-color: #f1f3f5;">
                         <th style="padding: 6px; border: 1px solid #dee2e6;">Origem</th>
                         <th style="padding: 6px; border: 1px solid #dee2e6;">Forma</th>
+                        <th style="padding: 6px; border: 1px solid #dee2e6;">Cliente</th>
                         <th style="padding: 6px; border: 1px solid #dee2e6;">Bandeira</th>
                         <th style="padding: 6px; border: 1px solid #dee2e6;">Parcelas</th>
                         <th style="padding: 6px; border: 1px solid #dee2e6;">Descrição</th>
@@ -520,8 +545,7 @@
                         <th style="padding: 6px; border: 1px solid #dee2e6; text-align: center;">Ação</th>
                     </tr>
                 </thead>
-                <tbody id="tabelaLancamentosCorpo">
-                    </tbody>
+                <tbody id="tabelaLancamentosCorpo"></tbody>
             </table>
 
             <div style="display: flex; justify-content: center; align-items: center; gap: 15px; margin-top: 15px; margin-bottom: 15px;">
@@ -532,11 +556,8 @@
         </div>
 
         <button id="btnChamarFechamento" style="background-color: #ffc107; color: #212529; margin-top: 20px;">Fechar Caixa (Encerrar Turno)</button>
-        
         <button id="btnVerHistorico" style="background-color: #17a2b8; margin-bottom: 10px;">📊 Histórico de Turnos</button>
-
         <button id="btnVerSincronizacao" style="background-color: #6f42c1; margin-bottom: 10px; display: none;">🔄 Painel de Sincronização Manual</button>
-
         <button id="btnSair" class="btn-logout">Trocar de Operador (Sair)</button>
     </div>
 
@@ -545,7 +566,6 @@
             <h3 id="tituloModalExclusao" style="color: #dc3545; margin-bottom: 10px;">🔒 Autorização de Gerente</h3>
             <p id="subtituloModalExclusao" style="font-size: 14px; color: #555; margin-bottom: 20px;">Esta ação requer credenciais de um superusuário para ser concluída.</p>
             
-            <!-- 🌟 NOVO CONTAINER: Permite ocultar os campos de texto no HTML caso o usuário seja admin -->
             <div id="containerCamposGerente">
                 <div class="form-group" style="text-align: left; margin-bottom: 12px;">
                     <label for="authGerenteUsuario" style="font-size: 13px;">Usuário Master:</label>
@@ -557,7 +577,9 @@
                 </div>
             </div>
 
-            <div id="erroAuthGerente" class="msg-box erro" style="margin-bottom: 15px; font-size: 13px; padding: 8px;"></div>
+            <div id="erroAuthGerente" class="msg-box erro" style="margin-bottom: 15px; font-size: 13px; padding: 8px; display: none;">
+                <span id="txtErroAuthGerenteConteudo"></span>
+            </div>
 
             <input type="hidden" id="idLancamentoParaExcluir">
 
@@ -584,6 +606,17 @@
     </div>
 
     <script>
+        // 🔒 FUNÇÃO GLOBAL DE SANITIZAÇÃO (Anti-XSS): Neutraliza qualquer tag ou script malicioso
+        function escaparHTML(string) {
+            if (!string) return '';
+            return String(string)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
         const { ipcRenderer } = require('electron');
 
         // Variáveis de paginação para os lançamentos do dia (Tela Principal)
@@ -627,7 +660,7 @@
                 bancoSemConfig = !!(statusRedeBanco && statusRedeBanco.semConfig);
                 console.log("[BOOT-FRONT] Estado do Postgres central - Online:", bancoEstaOnline, "| Sem Config:", bancoSemConfig);
                 
-                // 🌟 GATILHO COMPLEMENTAR: Se não houver configuração de banco, trava a tela e pede os parâmetros
+                // GATILHO COMPLEMENTAR: Se não houver configuração de banco, trava a tela e pede os parâmetros
                 if (bancoSemConfig) {
                     exibirFormularioConfigBanco();
                     return;
@@ -638,12 +671,15 @@
 
             try {
                 // Injeta o ID da máquina diretamente no input invisível da tela
-                if (document.getElementById('caixaId')) document.getElementById('caixaId').value = caixaIdDaMaquina;
+                if (document.getElementById('caixaId')) {
+                    document.getElementById('caixaId').value = caixaIdDaMaquina;
+                }
                 
                 const badgeRede = document.getElementById('badgeRede');
                 if (badgeRede) {
                     badgeRede.className = bancoEstaOnline ? 'badge-online' : 'badge-offline';
-                    badgeRede.innerText = bancoEstaOnline ? 'ONLINE' : 'OFFLINE';
+                    // 🌟 SEGURO: Injeção de texto estático controlada
+                    badgeRede.textContent = bancoEstaOnline ? 'ONLINE' : 'OFFLINE';
                 }
                                 
                 // PROCESSAMENTO DO LOGIN AUTOMÁTICO (SE HOUVER)
@@ -663,7 +699,11 @@
                     if (respostaAuto && respostaAuto.status === 'sucesso') {
                         window.operadorLogado = respostaAuto.operador;
                         if (document.getElementById('operadorId')) document.getElementById('operadorId').value = respostaAuto.operador.id;
-                        if (document.getElementById('navOperadorNome')) document.getElementById('navOperadorNome').innerText = respostaAuto.operador.nome;
+                        
+                        // 🌟 CORRIGIDO: Protegido contra injeção de caracteres no nome do operador
+                        if (document.getElementById('navOperadorNome')) {
+                            document.getElementById('navOperadorNome').textContent = escaparHTML(respostaAuto.operador.nome);
+                        }
                         
                         const ehAdmin = respostaAuto.operador.role === 'admin' || respostaAuto.operador.usuario === 'admin';
                         if (document.getElementById('btnVerHistorico')) document.getElementById('btnVerHistorico').style.display = ehAdmin ? 'block' : 'none';
@@ -671,9 +711,16 @@
 
                         const dadosCaixa = await ipcRenderer.invoke('carregar-caixa', caixaIdDaMaquina);
                         if (dadosCaixa.status === 'sucesso') {
-                            if (document.getElementById('navCaixaDescricao')) document.getElementById('navCaixaDescricao').innerText = dadosCaixa.dados.descricao;
-                            if (document.getElementById('navEmpresaNome')) document.getElementById('navEmpresaNome').innerText = dadosCaixa.dados.empresa_nome || "Grupo Alfa Varejo"; 
-                            if (document.getElementById('navFilialNome')) document.getElementById('navFilialNome').innerText = dadosCaixa.dados.filial_nome || "Alfa Matriz";
+                            // 🌟 CORRIGIDO: Todos os campos textuais vindos de tabelas agora passam por textContent + escaparHTML
+                            if (document.getElementById('navCaixaDescricao')) {
+                                document.getElementById('navCaixaDescricao').textContent = escaparHTML(dadosCaixa.dados.descricao);
+                            }
+                            if (document.getElementById('navEmpresaNome')) {
+                                document.getElementById('navEmpresaNome').textContent = escaparHTML(dadosCaixa.dados.empresa_nome || "Grupo Alfa Varejo");
+                            } 
+                            if (document.getElementById('navFilialNome')) {
+                                document.getElementById('navFilialNome').textContent = escaparHTML(dadosCaixa.dados.filial_nome || "Alfa Matriz");
+                            }
                         }
 
                         const caixaEstaAberto = await ipcRenderer.invoke('verificar-caixa-aberto', caixaIdDaMaquina);
@@ -709,91 +756,72 @@
         }
 
         function exibirErroTerminalNaoConfigurado() {
+            // 🌟 REESTRUTURADO: O layout agora mora fixo no HTML. O JS apenas ativa o estado visual.
             const divErroLogin = document.getElementById('erroLogin');
-            if (divErroLogin) {
-                divErroLogin.innerHTML = `
-                    <div style="text-align: left; font-size: 14px; line-height: 1.5;">
-                        <span style="font-size: 16px;">🖥️ <strong>Terminal Não Configurado!</strong></span><br><br>
-                        Insira o ID deste caixa abaixo para registrar este computador.<br><br>
-                        <div style="display: flex; gap: 8px; margin-bottom: 12px;">
-                            <input type="text" id="inputManualCaixaId" placeholder="Cole o UUID do Caixa aqui" style="padding: 8px; font-size: 14px; flex: 1; border-radius: 4px; border: 1px solid #ccc; color: #333;">
-                            <button id="btnSalvarCaixaManual" style="margin-top: 0; width: auto; padding: 8px 15px; font-size: 14px; background-color: #28a745;">Gravar</button>
-                        </div>
-                    </div>
-                `;
-                divErroLogin.style.display = 'block';
-                document.getElementById('btnSalvarCaixaManual').addEventListener('click', executarGravacaoManualCaixa);
-            }
+            
+            // Oculta blocos desnecessários do login tradicional
             if (document.getElementById('btnLogar')) document.getElementById('btnLogar').style.display = 'none';
+            if (document.getElementById('containerCamposLoginPadrao')) {
+                document.getElementById('containerCamposLoginPadrao').style.display = 'none';
+            }
+
+            // Exibe o container de erro e o bloco de configuração do terminal que já estão no HTML
+            if (divErroLogin) divErroLogin.style.display = 'block';
+            
+            const areaConfigTerminal = document.getElementById('areaConfiguracaoTerminalManual');
+            if (areaConfigTerminal) {
+                areaConfigTerminal.style.display = 'block';
+                const inputId = document.getElementById('inputManualCaixaId');
+                if (inputId) inputId.focus();
+            }
         }
 
-        // 🌟 NOVA FUNÇÃO: Injeta o formulário com os inputs exigidos pela gravação do banco
         function exibirFormularioConfigBanco() {
+            // 🌟 REESTRUTURADO: Removeu injeção de strings HTML pesadas de dentro do escopo funcional do script.
             const divErroLogin = document.getElementById('erroLogin');
-            if (divErroLogin) {
-                divErroLogin.innerHTML = `
-                    <div style="text-align: left; font-size: 14px; line-height: 1.4; color: #333;">
-                        <span style="font-size: 15px; color: #0056b3;">🔗 <strong>Configuração do Servidor Central</strong></span><br>
-                        Nenhum parâmetro de rede PostgreSQL foi localizado nesta máquina. Preencha os dados abaixo:<br><br>
-                        
-                        <div style="margin-bottom: 8px;">
-                            <label style="font-size: 12px; font-weight: bold; margin-bottom: 2px; color: #555;">IP / Host do Servidor Linux:</label>
-                            <input type="text" id="cfgHost" placeholder="IP Servidor DB" style="padding: 6px; font-size: 14px;">
-                        </div>
-                        <div style="margin-bottom: 8px; display: flex; gap: 10px;">
-                            <div style="flex: 2;">
-                                <label style="font-size: 12px; font-weight: bold; margin-bottom: 2px; color: #555;">Nome do Banco:</label>
-                                <input type="text" id="cfgDatabase" placeholder="" style="padding: 6px; font-size: 14px;">
-                            </div>
-                            <div style="width: 90px;">
-                                <label style="font-size: 12px; font-weight: bold; margin-bottom: 2px; color: #555;">Porta:</label>
-                                <input type="number" id="cfgPort" value="5432" style="padding: 6px; font-size: 14px; text-align: center;">
-                            </div>
-                        </div>
-                        <div style="margin-bottom: 8px;">
-                            <label style="font-size: 12px; font-weight: bold; margin-bottom: 2px; color: #555;">Usuário do Banco:</label>
-                            <input type="text" id="cfgUser" placeholder="" style="padding: 6px; font-size: 14px;">
-                        </div>
-                        <div style="margin-bottom: 15px;">
-                            <label style="font-size: 12px; font-weight: bold; margin-bottom: 2px; color: #555;">Senha do Banco:</label>
-                            <input type="password" id="cfgPassword" placeholder="Digite a senha master" style="padding: 6px; font-size: 14px;">
-                        </div>
-                        
-                        <button id="btnSalvarPostgresManual" style="margin-top: 0; padding: 10px; font-size: 15px; background-color: #007bff; color: white; border-radius: 4px; font-weight: bold;">Criptografar e Salvar Configurações</button>
-                    </div>
-                `;
-                divErroLogin.style.display = 'block';
-                
-                // Vincula o evento ao botão injetado para chamar a rotina de gravação
-                document.getElementById('btnSalvarPostgresManual').addEventListener('click', executarGravacaoManualPostgres);
-            }
-            // Oculta o botão padrão de login para forçar a configuração primeiro
+            
+            // Oculta blocos desnecessários do login tradicional
             if (document.getElementById('btnLogar')) document.getElementById('btnLogar').style.display = 'none';
+            if (document.getElementById('containerCamposLoginPadrao')) {
+                document.getElementById('containerCamposLoginPadrao').style.display = 'none';
+            }
+
+            // Ativa os elementos de interface nativos declarados na árvore do documento
+            if (divErroLogin) divErroLogin.style.display = 'block';
+            
+            const areaConfigBanco = document.getElementById('areaConfiguracaoPostgresManual');
+            if (areaConfigBanco) {
+                areaConfigBanco.style.display = 'block';
+                const inputHost = document.getElementById('cfgHost');
+                if (inputHost) inputHost.focus();
+            }
         }
 
         function exibirErroCaixaInvalido(mensagemErro) {
+            // 🌟 REESTRUTURADO: Layout fixado no HTML. O JS apenas manipula visibilidade e nós de texto puro.
             const divErroLogin = document.getElementById('erroLogin');
-            if (divErroLogin) {
-                divErroLogin.innerHTML = `
-                    <div style="text-align: left; font-size: 14px; line-height: 1.5;">
-                        <span style="font-size: 16px;">❌ <strong>Identificação de Caixa Inválida!</strong></span><br><br>
-                        O ID atual não foi encontrado na base ou está bloqueado.<br>
-                        <strong>Retorno:</strong> ${mensagemErro}<br><br>
-                        Insira um novo ID válido abaixo para reconfigurar:<br><br>
-                        <div style="display: flex; gap: 8px; margin-bottom: 12px;">
-                            <input type="text" id="inputManualCaixaId" placeholder="Cole o novo UUID do Caixa aqui" style="padding: 8px; font-size: 14px; flex: 1; border-radius: 4px; border: 1px solid #ccc; color: #333;">
-                            <button id="btnSalvarCaixaManual" style="margin-top: 0; width: auto; padding: 8px 15px; font-size: 14px; background-color: #28a745;">Gravar</button>
-                        </div>
-                    </div>
-                `;
-                divErroLogin.style.display = 'block';
-                document.getElementById('btnSalvarCaixaManual').addEventListener('click', executarGravacaoManualCaixa);
-            }
+            
             if (document.getElementById('btnLogar')) document.getElementById('btnLogar').style.display = 'none';
+            if (document.getElementById('containerCamposLoginPadrao')) {
+                document.getElementById('containerCamposLoginPadrao').style.display = 'none';
+            }
+
+            // Injeta a string de erro retornada pelo servidor de forma totalmente higienizada
+            const txtFeedbackErroCaixa = document.getElementById('txtFeedbackErroCaixaInvalido');
+            if (txtFeedbackErroCaixa) {
+                txtFeedbackErroCaixa.textContent = String(mensagemErro || 'Erro desconhecido.');
+            }
+
+            if (divErroLogin) divErroLogin.style.display = 'block';
+            
+            const areaConfigTerminal = document.getElementById('areaConfiguracaoTerminalManual');
+            if (areaConfigTerminal) {
+                areaConfigTerminal.style.display = 'block';
+                const inputId = document.getElementById('inputManualCaixaId');
+                if (inputId) inputId.focus();
+            }
         }
 
-        // 🌟 NOVO: Função que processa e grava os parâmetros relacionais do Postgres com timer de 10s
-        // 🌟 ATUALIZADO: Processa e grava os parâmetros relacionais do Postgres de forma síncrona
         async function executarGravacaoManualPostgres() {
             const hostInput = document.getElementById('cfgHost');
             const dbInput = document.getElementById('cfgDatabase');
@@ -820,19 +848,27 @@
                 let segundosRestantes = 5;
                 const divErroLogin = document.getElementById('erroLogin');
                 
-                divErroLogin.className = "msg-box online";
-                divErroLogin.style.textAlign = "center";
-                divErroLogin.style.padding = "25px";
+                // Ativa a interface de sucesso nativa que deve morar oculta no HTML
+                if (document.getElementById('areaConfiguracaoPostgresManual')) {
+                    document.getElementById('areaConfiguracaoPostgresManual').style.display = 'none';
+                }
                 
+                const containerSucessoPostgres = document.getElementById('areaSucessoGravacaoPostgres');
+                if (containerSucessoPostgres) containerSucessoPostgres.style.display = 'block';
+
+                if (divErroLogin) {
+                    divErroLogin.className = "msg-box online";
+                    divErroLogin.style.textAlign = "center";
+                    divErroLogin.style.padding = "25px";
+                }
+                
+                const txtContador = document.getElementById('txtContadorSegundosPostgres');
+
                 const intervaloTimer = setInterval(() => {
-                    divErroLogin.innerHTML = `
-                        <div style="font-size: 15px; line-height: 1.6; color: #155724;">
-                            🏦 <strong>Parâmetros de Conexão Gravados!</strong><br><br>
-                            As credenciais de rede foram criptografadas e salvas com sucesso.<br>
-                            O sistema será encerrado em <strong>${segundosRestantes} segundos</strong> para inicializar os canais de dados.<br><br>
-                            <strong>Abra o aplicativo novamente para realizar o login.</strong>
-                        </div>
-                    `;
+                    // 🌟 SEGURO: Altera apenas o número dinâmico do contador como texto puro
+                    if (txtContador) {
+                        txtContador.textContent = String(segundosRestantes);
+                    }
                     
                     segundosRestantes--;
                     
@@ -864,20 +900,28 @@
             if (resultado.status === 'sucesso') {
                 let segundosRestantes = 5;
                 
-                // Transforma o card de erro em um card de sucesso com o timer dinâmico
-                divErroLogin.className = "msg-box online";
-                divErroLogin.style.textAlign = "center";
-                divErroLogin.style.padding = "20px";
+                // Oculta a área de inputs para evitar cliques duplos durante o encerramento
+                if (document.getElementById('areaConfiguracaoTerminalManual')) {
+                    document.getElementById('areaConfiguracaoTerminalManual').style.display = 'none';
+                }
+
+                // Ativa o container estrutural de sucesso que deve morar fixo no HTML
+                const containerSucessoCaixa = document.getElementById('areaSucessoGravacaoCaixaId');
+                if (containerSucessoCaixa) containerSucessoCaixa.style.display = 'block';
+
+                if (divErroLogin) {
+                    divErroLogin.className = "msg-box online";
+                    divErroLogin.style.textAlign = "center";
+                    divErroLogin.style.padding = "20px";
+                }
+                
+                const txtContador = document.getElementById('txtContadorSegundosCaixaId');
                 
                 const intervaloTimer = setInterval(() => {
-                    divErroLogin.innerHTML = `
-                        <div style="font-size: 15px; line-height: 1.6;">
-                            💾 <strong>Configuração salva com sucesso!</strong><br><br>
-                            O terminal foi vinculado ao ID informado.<br>
-                            O sistema será encerrado em <strong>${segundosRestantes} segundos</strong> para aplicar as alterações.<br><br>
-                            <span style="color: #155724; font-weight: bold;">Abra o sistema novamente para realizar o login.</span>
-                        </div>
-                    `;
+                    // 🌟 SEGURO: Injeção estritamente textual, impossibilitando mutações por XSS
+                    if (txtContador) {
+                        txtContador.textContent = String(segundosRestantes);
+                    }
                     
                     segundosRestantes--;
                     
@@ -893,116 +937,99 @@
         }
 
         // 2. Ação de Login + Verificação de Estado do Caixa (CORRIGIDO)
+        // 🌟 REESTRUTURADO: Chamada única, sem inteligência de fluxos condicionais no HTML
         document.getElementById('btnLogar').addEventListener('click', async () => {
-            document.getElementById('sucessoLogin').style.display = 'none';
-            const campoUsuario = document.getElementById('loginUsuario');
-            const campoSenha = document.getElementById('loginSenha');
-            const divErroLogin = document.getElementById('erroLogin');
-            
-            const usuario = campoUsuario.value.trim();
-            const senha = campoSenha.value;
-
-            // Captura o caixaId armazenado no input oculto da página
+            const usuario = document.getElementById('loginUsuario').value.trim();
+            const senha = document.getElementById('loginSenha').value;
             const caixaId = document.getElementById('caixaId').value;
+            const divErroLogin = document.getElementById('erroLogin');
+            const txtErroLogin = document.getElementById('txtErroLoginConteudo');
+            const manterConectado = document.getElementById('lembrarSenha').checked;
 
-            divErroLogin.style.display = 'none';
+            // 🌟 REESTRUTURADO: Limpa o conteúdo interno de texto seguro
+            if (divErroLogin) divErroLogin.style.display = 'none';
+            if (txtErroLogin) txtErroLogin.textContent = '';
 
             if (!usuario || !senha) {
-                divErroLogin.innerText = "⚠️ Preencha o usuário e a senha!";
-                divErroLogin.style.display = 'block';
-                campoUsuario.focus();
+                if (txtErroLogin) txtErroLogin.textContent = "⚠️ Preencha o usuário e a senha!";
+                if (divErroLogin) divErroLogin.style.display = 'block';
                 return;
             }
 
             try {
-                const respostaAuth = await ipcRenderer.invoke('tentar-login', { usuario, senha, caixaId });
+                const resposta = await ipcRenderer.invoke('inicializar-turno-operador', { usuario, senha, caixaId, manterConectado });
 
-                if (respostaAuth.status === 'sucesso') {
-                    window.operadorLogado = respostaAuth.operador;
-
-                    document.getElementById('operadorId').value = respostaAuth.operador.id;
+                if (resposta.status === 'sucesso') {
+                    window.operadorLogado = resposta.operador;
+                    document.getElementById('operadorId').value = resposta.operador.id;
                     
-                    const ehAdmin = respostaAuth.operador.role === 'admin' || respostaAuth.operador.usuario === 'admin';
-                    const botaoHistoricoClassico = document.getElementById('btnVerHistorico');
-                    if (botaoHistoricoClassico) {
-                        botaoHistoricoClassico.style.display = ehAdmin ? 'block' : 'none';
+                    // 🌟 CORRIGIDO: Proteção contra XSS injetando através de textContent + escaparHTML
+                    if (document.getElementById('navOperadorNome')) {
+                        document.getElementById('navOperadorNome').textContent = escaparHTML(resposta.operador.nome);
                     }
 
-                    const botaoSyncMenu = document.getElementById('btnVerSincronizacao');
-                    if (botaoSyncMenu) botaoSyncMenu.style.display = ehAdmin ? 'block' : 'none';
+                    const ehAdmin = resposta.operador.role === 'admin' || resposta.operador.usuario === 'admin';
+                    document.getElementById('btnVerHistorico').style.display = ehAdmin ? 'block' : 'none';
+                    document.getElementById('btnVerSincronizacao').style.display = ehAdmin ? 'block' : 'none';
 
-                    const manterConectado = document.getElementById('lembrarSenha').checked;
-                    await ipcRenderer.invoke('salvar-lembrete-login', { 
-                        usuario, 
-                        senha, 
-                        ativo: manterConectado 
-                    });
-
-                    campoUsuario.value = '';
-                    campoSenha.value = '';
-
-                    // 🌟 CORREÇÃO: Busca os dados reais e amigáveis do caixa para a Navbar
-                    const dadosCaixa = await ipcRenderer.invoke('carregar-caixa', caixaId);
-                    const caixaEstaAberto = await ipcRenderer.invoke('verificar-caixa-aberto', caixaId);
-                    
                     document.getElementById('telaLogin').style.display = 'none';
 
-                    if (caixaEstaAberto) {
-                        // Exibe a barra superior e a tela de vendas
+                    if (resposta.caixaEstaAberto) {
                         document.getElementById('navbarStatus').style.display = 'flex';
                         document.getElementById('telaCaixa').style.display = 'block';
                         
-                        // Alimenta a barra superior com os dados corretos
-                        document.getElementById('navOperadorNome').innerText = window.operadorLogado.nome;
-                        if (dadosCaixa.status === 'sucesso') {
-                            document.getElementById('navCaixaDescricao').innerText = dadosCaixa.dados.descricao;
-                            document.getElementById('navEmpresaNome').innerText = dadosCaixa.dados.empresa_nome; 
-                            document.getElementById('navFilialNome').innerText = dadosCaixa.dados.filial_nome;
+                        if (resposta.dadosCaixa) {
+                            // 🌟 CORRIGIDO: Sanitização completa dos parâmetros da empresa colhidos do banco
+                            if (document.getElementById('navCaixaDescricao')) {
+                                document.getElementById('navCaixaDescricao').textContent = escaparHTML(resposta.dadosCaixa.descricao);
+                            }
+                            if (document.getElementById('navEmpresaNome')) {
+                                document.getElementById('navEmpresaNome').textContent = escaparHTML(resposta.dadosCaixa.empresa_nome); 
+                            }
+                            if (document.getElementById('navFilialNome')) {
+                                document.getElementById('navFilialNome').textContent = escaparHTML(resposta.dadosCaixa.filial_nome);
+                            }
                         }
                         
-                        // 🌟 ADICIONADO: Força o badge a renderizar o estado de rede inicial correto pós-login
-                        const statusRedeAtual = await ipcRenderer.invoke('verificar-status-rede-banco');
-                        atualizarBadgeRedeSuperior(!!(statusRedeAtual && statusRedeAtual.isOnline));
-
                         await atualizarTabelaLancamentosJanela();
                         document.getElementById('origem').focus();
                     } else {
-                        document.getElementById('navbarStatus').style.display = 'none';
                         document.getElementById('telaAbertura').style.display = 'block';
                         document.getElementById('valorAbertura').focus();
                         document.getElementById('valorAbertura').select();
                     }
                 } else {
-                    divErroLogin.innerText = `❌ ${respostaAuth.mensagem}`;
-                    divErroLogin.style.display = 'block';
-                    campoSenha.value = '';
-                    campoUsuario.focus();
+                    // 🌟 CORRIGIDO: Retorno de erro do servidor tratado puramente como string textual
+                    if (txtErroLogin) txtErroLogin.textContent = `❌ ${resposta.mensagem}`;
+                    if (divErroLogin) divErroLogin.style.display = 'block';
                 }
             } catch (err) {
-                console.error(err);
-                divErroLogin.innerText = "❌ Erro ao processar o login devido a uma falha interna.";
-                divErroLogin.style.display = 'block';
+                if (txtErroLogin) txtErroLogin.textContent = "❌ Falha crítica na comunicação com a malha do sistema.";
+                if (divErroLogin) divErroLogin.style.display = 'block';
             }
         });
 
         // 2.1 Ação de Confirmar Abertura de Caixa (BLOCO COMPLETO)
+        // 2.1 Ação de Confirmar Abertura de Caixa (BLOCO HIGIENIZADO)
         document.getElementById('btnConfirmarAbertura').addEventListener('click', async () => {
             const caixaId = document.getElementById('caixaId').value;
             const operadorId = document.getElementById('operadorId').value;
             const valorAbertura = parseFloat(document.getElementById('valorAbertura').value) || 0.00;
-            const divErroLogin = document.getElementById('erroLogin'); // Reaproveita para exibir o erro na caixa de abertura
+            
+            // 🌟 CORRIGIDO: Redirecionado para o contêiner dedicado da tela de abertura
+            const divErroAbertura = document.getElementById('erroAbertura');
+            const txtErroAbertura = document.getElementById('txtErroAberturaConteudo');
 
-            divErroLogin.style.display = 'none';
-            divErroLogin.innerText = '';
+            if (divErroAbertura) divErroAbertura.style.display = 'none';
+            if (txtErroAbertura) txtErroAbertura.textContent = '';
 
             if (valorAbertura < 0) {
-                divErroLogin.innerText = "❌ O valor de abertura não pode ser negativo!";
-                divErroLogin.style.display = 'block';
+                if (txtErroAbertura) txtErroAbertura.textContent = "❌ O valor de abertura não pode ser negativo!";
+                if (divErroAbertura) divErroAbertura.style.display = 'block';
                 
-                // Limpa o aviso após 5 segundos
                 setTimeout(() => {
-                    divErroLogin.style.display = 'none';
-                    divErroLogin.innerText = '';
+                    if (divErroAbertura) divErroAbertura.style.display = 'none';
+                    if (txtErroAbertura) txtErroAbertura.textContent = '';
                 }, 5000);
                 return;
             }
@@ -1011,47 +1038,51 @@
                 const resultado = await ipcRenderer.invoke('abrir-caixa', { caixaId, operadorId, valorAbertura });
                 
                 if (resultado.status === 'sucesso') {
-                    // 🌟 NOVO: Busca as configurações amigáveis do caixa para preencher a Navbar após a abertura bem-sucedida
                     const dadosCaixa = await ipcRenderer.invoke('carregar-caixa', caixaId);
                     
-                    // Exibe a barra superior corporativa e limpa os placeholders
                     document.getElementById('navbarStatus').style.display = 'flex';
-                    document.getElementById('navOperadorNome').innerText = window.operadorLogado.nome;
+                    
+                    // 🌟 CORRIGIDO: Sanitização dos parâmetros textuais injetados na barra de status
+                    if (document.getElementById('navOperadorNome')) {
+                        document.getElementById('navOperadorNome').textContent = escaparHTML(window.operadorLogado.nome);
+                    }
                     
                     if (dadosCaixa.status === 'sucesso') {
-                        document.getElementById('navCaixaDescricao').innerText = dadosCaixa.dados.descricao;
-                        document.getElementById('navEmpresaNome').innerText = dadosCaixa.dados.empresa_nome || "Grupo Alfa Varejo"; 
-                        document.getElementById('navFilialNome').innerText = dadosCaixa.dados.filial_nome || "Alfa Matriz";
+                        if (document.getElementById('navCaixaDescricao')) {
+                            document.getElementById('navCaixaDescricao').textContent = escaparHTML(dadosCaixa.dados.descricao);
+                        }
+                        if (document.getElementById('navEmpresaNome')) {
+                            document.getElementById('navEmpresaNome').textContent = escaparHTML(dadosCaixa.dados.empresa_nome || "Grupo Alfa Varejo"); 
+                        }
+                        if (document.getElementById('navFilialNome')) {
+                            document.getElementById('navFilialNome').textContent = escaparHTML(dadosCaixa.dados.filial_nome || "Alfa Matriz");
+                        }
                     }
 
-                    // Força o badge a renderizar o estado de rede inicial correto pós-abertura
                     const statusRedeAtual = await ipcRenderer.invoke('verificar-status-rede-banco');
                     atualizarBadgeRedeSuperior(!!(statusRedeAtual && statusRedeAtual.isOnline));
 
-                    // Esconde a tela de abertura e libera a tela principal de movimentações
                     document.getElementById('telaAbertura').style.display = 'none';
                     document.getElementById('telaCaixa').style.display = 'block';
                     
-                    // Atualiza a tabela (que começará vazia por ser um novo turno)
                     await atualizarTabelaLancamentosJanela();
-                    
                     document.getElementById('origem').focus();
                 } else {
-                    divErroLogin.innerText = `❌ Erro ao abrir o caixa: ${resultado.mensagem}`;
-                    divErroLogin.style.display = 'block';
+                    if (txtErroAbertura) txtErroAbertura.textContent = `❌ Erro ao abrir o caixa: ${resultado.mensagem}`;
+                    if (divErroAbertura) divErroAbertura.style.display = 'block';
 
                     setTimeout(() => {
-                        divErroLogin.style.display = 'none';
-                        divErroLogin.innerText = '';
+                        if (divErroAbertura) divErroAbertura.style.display = 'none';
+                        if (txtErroAbertura) txtErroAbertura.textContent = '';
                     }, 5000);
                 }
             } catch (err) {
-                divErroLogin.innerText = `❌ Erro interno na abertura: ${err.message}`;
-                divErroLogin.style.display = 'block';
+                if (txtErroAbertura) txtErroAbertura.textContent = `❌ Erro interno na abertura: ${err.message}`;
+                if (divErroAbertura) divErroAbertura.style.display = 'block';
 
                 setTimeout(() => {
-                    divErroLogin.style.display = 'none';
-                    divErroLogin.innerText = '';
+                    if (divErroAbertura) divErroAbertura.style.display = 'none';
+                    if (txtErroAbertura) txtErroAbertura.textContent = '';
                 }, 5000);
             }
         });
@@ -1063,22 +1094,21 @@
             const tituloPainel = document.getElementById('tituloPainelParcelas');
             const valorSelecionado = event.target.value;
             
-            document.getElementById('parcelasCartao').value = '1'; // Reseta o contador
+            document.getElementById('parcelasCartao').value = '1';
 
             if (valorSelecionado === 'CC') {
-                // Modo Cartão: Mostra tudo (Bandeira + Parcelas)
                 painelParcelas.style.display = 'block';
                 containerBandeira.style.display = 'block';
-                tituloPainel.innerText = '💳 Detalhes do Cartão de Crédito';
+                // 🌟 SEGURO: Modificação de rótulos via propriedade de texto puro
+                tituloPainel.textContent = '💳 Detalhes do Cartão de Crédito';
             } 
             else if (valorSelecionado === 'CR') {
-                // Modo Crediário: Oculta a bandeira, mostra só as parcelas
                 painelParcelas.style.display = 'block';
                 containerBandeira.style.display = 'none';
-                tituloPainel.innerText = '📋 Parcelamento do Crediário';
+                // 🌟 SEGURO: Modificação de rótulos via propriedade de texto puro
+                tituloPainel.textContent = '📋 Parcelamento do Crediário';
             } 
             else {
-                // Outras formas (Dinheiro/Pix): Oculta o painel inteiro
                 painelParcelas.style.display = 'none';
             }
         });
@@ -1089,16 +1119,19 @@
         // 3. Registrar Lançamento de Venda (ATUALIZADO COM SUPORTE E TRAVAS DE CREDIÁRIO)
         document.getElementById('btnRegistrar').addEventListener('click', async () => {
             const statusDiv = document.getElementById('statusLog');
+            const txtStatusConteudo = document.getElementById('txtStatusLogConteudo');
             const cardAlertaBloqueio = document.getElementById('alertaClienteBloqueado');
             
             const campoCliente = document.getElementById('buscaCliente');
             const campoTotal = document.getElementById('total');
 
-            // Função utilitária para destacar o campo com erro e agendar o sumiço em 10 segundos
+            // Função utilitária para destacar o campo com erro de forma 100% segura
             const aplicarDestaqueErro = (elementoCampo, mensagemErro) => {
-                statusDiv.style.display = 'block';
-                statusDiv.className = 'msg-box erro';
-                statusDiv.innerText = mensagemErro;
+                if (statusDiv) statusDiv.style.display = 'block';
+                if (statusDiv) statusDiv.className = 'msg-box erro';
+                
+                // 🌟 CORRIGIDO: Injeção de mensagem de erro via nó de texto puro
+                if (txtStatusConteudo) txtStatusConteudo.textContent = mensagemErro;
 
                 elementoCampo.style.border = '2px solid #dc3545';
                 elementoCampo.style.backgroundColor = '#f8d7da';
@@ -1106,8 +1139,8 @@
                 if (typeof elementoCampo.select === 'function') elementoCampo.select();
 
                 setTimeout(() => {
-                    statusDiv.style.display = 'none';
-                    statusDiv.innerText = '';
+                    if (statusDiv) statusDiv.style.display = 'none';
+                    if (txtStatusConteudo) txtStatusConteudo.textContent = '';
                     elementoCampo.style.border = '';
                     elementoCampo.style.backgroundColor = '';
                 }, 10000);
@@ -1132,13 +1165,13 @@
             let parcelas = 1;
 
             if (!caixaId || !operadorId) {
-                statusDiv.style.display = 'block';
-                statusDiv.className = 'msg-box erro';
-                statusDiv.innerText = '❌ Erro interno: ID do Caixa ou ID do Operador não foram carregados na sessão!';
+                if (statusDiv) statusDiv.style.display = 'block';
+                if (statusDiv) statusDiv.className = 'msg-box erro';
+                if (txtStatusConteudo) txtStatusConteudo.textContent = '❌ Erro interno: ID do Caixa ou ID do Operador não foram carregados na sessão!';
                 return;
             }
 
-            // 🌟 VALIDAÇÃO INTEGRADA: Obriga a selecionar cliente nominal se for Crediário
+            // VALIDAÇÃO INTEGRADA: Obriga a selecionar cliente nominal se for Crediário
             if (formaPagamento === 'CR') {
                 if (clienteId === '00000000-0000-0000-0000-000000000000' || !clienteId) {
                     aplicarDestaqueErro(campoCliente, '🛑 Erro de Faturamento: Vendas no Crediário exigem a identificação obrigatória de um Cliente nominal.');
@@ -1155,7 +1188,7 @@
                     return;
                 }
             } else if (formaPagamento === 'CR') {
-                bandeira = null; // 🌟 Força null no front para o Crediário
+                bandeira = null; 
                 parcelas = parseInt(document.getElementById('parcelasCartao').value) || 1;
                 if (parcelas < 1) {
                     aplicarDestaqueErro(document.getElementById('parcelasCartao'), '❌ Erro: O número de parcelas deve ser pelo menos 1!');
@@ -1168,22 +1201,31 @@
                 return;
             }
 
-            statusDiv.style.display = 'block';
-            statusDiv.className = 'msg-box';
-            statusDiv.innerText = "Processando lançamento...";
+            if (statusDiv) statusDiv.style.display = 'block';
+            if (statusDiv) statusDiv.className = 'msg-box';
+            if (txtStatusConteudo) txtStatusConteudo.textContent = "Processando lançamento...";
+
+            // O front-end colhe estritamente os inputs brutos sem tomar decisões de chaves
+            const payloadVenda = {
+                caixaId,
+                operadorId,
+                total,
+                formaPagamento,
+                origem,
+                descricaoMovimento,
+                clienteId,
+                bandeira,
+                parcelas
+            };
 
             try {
-                // Dispara o envio ao processo principal (Main)
-                const resposta = await ipcRenderer.invoke('efetuar-venda', {
-                    caixaId, operadorId, total, formaPagamento, origem, descricaoMovimento, bandeira, parcelas, clienteId
-                });
+                const resposta = await ipcRenderer.invoke('efetuar-venda', payloadVenda);
 
                 if (resposta.status === 'sucesso') {
-                    statusDiv.innerText = `✅ Movimento salvo!\nModo: ${resposta.modo}`;
-                    statusDiv.className = resposta.modo.includes('ONLINE') ? 'msg-box online' : 'msg-box offline';
+                    // 🌟 CORRIGIDO: Mudado para textContent seguro no callback de sucesso
+                    if (txtStatusConteudo) txtStatusConteudo.textContent = `✅ Movimento salvo!\nModo: ${resposta.modo}`;
+                    if (statusDiv) statusDiv.className = resposta.modo.includes('ONLINE') ? 'msg-box online' : 'msg-box offline';
                     
-                    // 🌟 NOVA ABORDAGEM ASSÍNCRONA COM MODAL HTML
-                    // 🌟 MODIFICADO: Removeu qualquer query local e passou a responsabilidade pro Main IPC
                     if (formaPagamento === 'CR') {
                         const modal = document.getElementById('modalImpressaoCrediario');
                         const btnSim = document.getElementById('btnModalSimPrint');
@@ -1192,7 +1234,6 @@
                         modal.style.display = 'flex';
                         
                         btnSim.onclick = () => {
-                            // Envia apenas o ID da venda. O processo principal se vira para buscar os dados
                             ipcRenderer.send('imprimir-comprovante-crediario', resposta.id);
                             modal.style.display = 'none';
                         };
@@ -1211,28 +1252,30 @@
                     document.getElementById('formaPagamento').value = "DN";
                     document.getElementById('origem').value = "E";
                     
-                    document.getElementById('alertaClienteBloqueado').style.display = 'none';
-                    document.getElementById('alertaClienteBloqueado').innerText = '';
+                    if (document.getElementById('alertaClienteBloqueado')) {
+                        document.getElementById('alertaClienteBloqueado').style.display = 'none';
+                    }
+                    if (document.getElementById('txtAlertaClienteBloqueadoConteudo')) {
+                        document.getElementById('txtAlertaClienteBloqueadoConteudo').textContent = '';
+                    }
                     
                     await atualizarTabelaLancamentosJanela();
                     document.getElementById('origem').focus();
 
                     setTimeout(() => {
-                        statusDiv.style.display = 'none';
-                        statusDiv.innerText = '';
+                        if (statusDiv) statusDiv.style.display = 'none';
+                        if (txtStatusConteudo) txtStatusConteudo.textContent = '';
                     }, 3000);
 
                 } else {
-                    // Se o banco local rejeitar (ex: estouro de limite), captura e destaca o campo correto
                     if (resposta.mensagem && resposta.mensagem.includes('Limite Insuficiente')) {
                         aplicarDestaqueErro(campoTotal, `❌ ${resposta.mensagem}`);
                     } else {
-                        statusDiv.innerText = `❌ Erro: ${resposta.mensagem}`;
-                        statusDiv.className = 'msg-box erro';
+                        if (txtStatusConteudo) txtStatusConteudo.textContent = `❌ Erro: ${resposta.mensagem}`;
+                        if (statusDiv) statusDiv.className = 'msg-box erro';
                     }
                 }
             } catch (err) {
-                // Captura falhas de comunicação IPC ou exceções inesperadas
                 aplicarDestaqueErro(campoTotal, `❌ Falha de processamento: ${err.message}`);
             }
         });
@@ -1240,60 +1283,66 @@
         // 4. Botão de Logout
         //document.getElementById('btnSair').addEventListener('click', () => {
         // 4. Botão de Logout (CORRIGIDO: Restaura perfeitamente o estado da tela de login)
+        // 4. Botão de Logout (CORRIGIDO: Alinhado à arquitetura segura e sem innerText)
         document.getElementById('btnSair').addEventListener('click', async () => {
-            // 🌟 1. Oculta a barra de status superior corporativa
+            // 1. Oculta a barra de status superior corporativa
             document.getElementById('navbarStatus').style.display = 'none';
             
-            // 🌟 2. Oculta todos os painéis operacionais do sistema
+            // 2. Oculta todos os painéis operacionais do sistema
             document.getElementById('telaCaixa').style.display = 'none';
             document.getElementById('telaAbertura').style.display = 'none';
             document.getElementById('telaFechamento').style.display = 'none';
             document.getElementById('telaHistorico').style.display = 'none';
             document.getElementById('telaSincronizacao').style.display = 'none';
             
-            // 🌟 3. Limpa os estados de erro e logs antigos das caixas de mensagem
+            // 3. Limpa os estados de erro e logs antigos redirecionando para textContent
             document.getElementById('erroLogin').style.display = 'none';
-            document.getElementById('erroLogin').innerText = '';
+            document.getElementById('txtErroLoginConteudo').textContent = '';
             document.getElementById('statusLog').style.display = 'none';
-            document.getElementById('statusLog').innerText = '';
+            document.getElementById('txtStatusLogConteudo').textContent = '';
             
-            // 🌟 4. Limpa as variáveis e inputs de sessão em memória do operador que saiu
+            // 4. Limpa as variáveis e inputs de sessão em memória do operador que saiu
             document.getElementById('descricaoMovimento').value = '';
             document.getElementById('total').value = '0.00';
             document.getElementById('operadorId').value = '';
             document.getElementById('loginSenha').value = '';
             window.operadorLogado = null;
             
-            // 🌟 5. Remove as credenciais automáticas do config.json para forçar nova digitação
+            // 5. Remove as credenciais automáticas do config.json para forçar nova digitação
             await ipcRenderer.invoke('salvar-lembrete-login', { usuario: '', senhaHash: '', ativo: false });
             document.getElementById('lembrarSenha').checked = false;
             
-            // 🌟 6. Torna a tela de Login visível novamente e joga o foco no campo de Usuário
+            // 6. Torna a tela de Login visível novamente e joga o foco no campo de Usuário
             document.getElementById('telaLogin').style.display = 'block';
             document.getElementById('loginUsuario').value = '';
 
-            // No evento do btnSair adicione esta linha junto com os outros resets de tela:
+            // Reseta também as travas e spans do autocomplete do caixa
             document.getElementById('alertaClienteBloqueado').style.display = 'none';
-            document.getElementById('alertaClienteBloqueado').innerText = '';
+            document.getElementById('txtAlertaClienteBloqueadoConteudo').textContent = '';
             
             setTimeout(() => { 
                 document.getElementById('loginUsuario').focus(); 
             }, 50);
         });
 
-        //Fechamento de Caixa
-        // 1. Chamar a Tela de Fechamento (Com detalhamento por forma/origem) (Separando Dinheiro e Eletrônico) (Com coluna de Saldo Líquido e Cores Ajustadas)
+        // =====================================================================
+        // 📊 CONTROLE E AUDITORIA DE FECHAMENTO DE CAIXA
+        // =====================================================================
         document.getElementById('btnChamarFechamento').addEventListener('click', async () => {
             const caixaId = document.getElementById('caixaId').value;
             const statusDiv = document.getElementById('statusLog');
+            const txtStatusConteudo = document.getElementById('txtStatusLogConteudo');
             
             const resumo = await ipcRenderer.invoke('obter-resumo-turno', caixaId);
             
             if (resumo.status === 'erro') {
-                statusDiv.style.display = 'block';
-                statusDiv.className = 'msg-box erro';
-                statusDiv.innerText = `⚠️ ${resumo.mensagem}`;
-                setTimeout(() => { statusDiv.style.display = 'none'; }, 5000);
+                if (statusDiv) statusDiv.style.display = 'block';
+                if (statusDiv) statusDiv.className = 'msg-box erro';
+                if (txtStatusConteudo) txtStatusConteudo.textContent = `⚠️ ${resumo.mensagem}`;
+                setTimeout(() => { 
+                    if (statusDiv) statusDiv.style.display = 'none'; 
+                    if (txtStatusConteudo) txtStatusConteudo.textContent = '';
+                }, 5000);
                 return;
             }
 
@@ -1307,7 +1356,7 @@
                     dinheiroEntradas = f.entradas;
                     dinheiroSaidas = f.saidas;
                 } else {
-                    // 🌟 Vendas em Cartão, Pix e agora o CREDIÁRIO alimentam o Faturamento Eletrônico/Auditoria
+                    // Vendas em Cartão, Pix e Crediário alimentam o faturamento eletrônico
                     totalEletronico += f.entradas;
                 }
             });
@@ -1316,12 +1365,15 @@
 
             document.getElementById('fechamentoMovimentoId').value = resumo.movimentoId;
             document.getElementById('saldoBrutoOculto').value = resumo.saldoFinal; 
-            document.getElementById('resumoFundo').innerText = `R$ ${fundoInicial.toFixed(2)}`;
-            document.getElementById('resumoDinheiroEsperado').innerText = `R$ ${dinheiroEsperado.toFixed(2)}`;
-            document.getElementById('resumoEletronicoEsperado').innerText = `R$ ${totalEletronico.toFixed(2)}`;
+            
+            // 🌟 SEGURO: Atualização de métricas brutas via propriedade nativa textContent
+            document.getElementById('resumoFundo').textContent = `R$ ${fundoInicial.toFixed(2)}`;
+            document.getElementById('resumoDinheiroEsperado').textContent = `R$ ${dinheiroEsperado.toFixed(2)}`;
+            document.getElementById('resumoEletronicoEsperado').textContent = `R$ ${totalEletronico.toFixed(2)}`;
 
             document.getElementById('valorContadoGaveta').value = "0.00";
             document.getElementById('resultadoConferencia').style.display = 'none';
+            document.getElementById('txtResultadoConferenciaConteudo').textContent = '';
 
             const corpoTabela = document.getElementById('tabelaDetalheCorpo');
             corpoTabela.innerHTML = '';
@@ -1331,9 +1383,10 @@
                     const saldoLiquido = forma.entradas - forma.saidas;
                     const estiloSaida = forma.saidas > 0 ? 'color: red; font-weight: bold;' : 'color: #888;';
                     
+                    // 🌟 CORRIGIDO: Nome da forma sanitizado contra XSS antes da injeção no grid de conferência
                     const linha = document.createElement('tr');
                     linha.innerHTML = `
-                        <td style="padding: 8px; border: 1px solid #dee2e6; font-weight: bold;">${forma.nome}</td>
+                        <td style="padding: 8px; border: 1px solid #dee2e6; font-weight: bold;">${escaparHTML(forma.nome)}</td>
                         <td style="padding: 8px; border: 1px solid #dee2e6; color: green; font-weight: bold;">R$ ${forma.entradas.toFixed(2)}</td>
                         <td style="padding: 8px; border: 1px solid #dee2e6; ${estiloSaida}">R$ ${forma.saidas.toFixed(2)}</td>
                         <td style="padding: 8px; border: 1px solid #dee2e6; font-weight: bold; background-color: #f8f9fa; color: #2b2b2b;">R$ ${saldoLiquido.toFixed(2)}</td>
@@ -1352,62 +1405,65 @@
 
         // 🌟 NOVO: Listener para calcular quebra/sobra conforme o operador digita
         document.getElementById('valorContadoGaveta').addEventListener('input', () => {
-            const esperado = parseFloat(document.getElementById('resumoDinheiroEsperado').innerText.replace('R$ ', ''));
+            // 🌟 SEGURO: Coleta do saldo esperado da tela via textContent seguro
+            const elementoEsperado = document.getElementById('resumoDinheiroEsperado');
+            const esperado = elementoEsperado ? parseFloat(elementoEsperado.textContent.replace('R$ ', '')) : 0.00;
             const contado = parseFloat(document.getElementById('valorContadoGaveta').value) || 0.00;
+            
             const divResultado = document.getElementById('resultadoConferencia');
+            const txtResultado = document.getElementById('txtResultadoConferenciaConteudo');
             
             const diferenca = contado - esperado;
-            divResultado.style.display = 'block';
+            if (divResultado) divResultado.style.display = 'block';
 
-            if (diferenca === 0) {
-                divResultado.style.color = 'green';
-                divResultado.innerText = '✅ Perfeito! O dinheiro da gaveta bateu com o sistema.';
-            } else if (diferenca > 0) {
-                divResultado.style.color = '#0056b3';
-                divResultado.innerText = `💵 Sobra de Caixa: Está SOBRANDO R$ ${diferenca.toFixed(2)} na gaveta.`;
-            } else {
-                divResultado.style.color = '#dc3545';
-                divResultado.innerText = `⚠️ Quebra de Caixa: Está FALTANDO R$ ${Math.abs(diferenca).toFixed(2)} na gaveta.`;
+            // 🌟 CORRIGIDO: Modificação de mensagens e feedback de quebra/sobra via propriedade textContent
+            if (txtResultado) {
+                if (diferenca === 0) {
+                    if (divResultado) divResultado.style.color = 'green';
+                    txtResultado.textContent = '✅ Perfeito! O dinheiro da gaveta bateu com o sistema.';
+                } else if (diferenca > 0) {
+                    if (divResultado) divResultado.style.color = '#0056b3';
+                    txtResultado.textContent = `💵 Sobra de Caixa: Está SOBRANDO R$ ${diferenca.toFixed(2)} na gaveta.`;
+                } else {
+                    if (divResultado) divResultado.style.color = '#dc3545';
+                    txtResultado.textContent = `⚠️ Quebra de Caixa: Está FALTANDO R$ ${Math.abs(diferenca).toFixed(2)} na gaveta.`;
+                }
             }
         });
         
-        // 2. Confirmar Fechamento Definitivo (Enviando os dados de auditoria) (Validação de campo zerado/negativo inclusa)
+        // 2. Confirmar Fechamento Definitivo (Enviando os dados de auditoria)
         document.getElementById('btnConfirmarFechamento').addEventListener('click', async () => {
             const movimentoId = document.getElementById('fechamentoMovimentoId').value;
             const operadorId = document.getElementById('operadorId').value;
-            const statusDiv = document.getElementById('statusLog'); // Usa para exibir mensagens de erro temporárias
             
             const valorFechamento = parseFloat(document.getElementById('saldoBrutoOculto').value); 
-            
-            // 🚨 CAPTURA O VALOR QUE O OPERADOR CONTOU:
             const valorContadoRaw = document.getElementById('valorContadoGaveta').value;
             const valorContado = parseFloat(valorContadoRaw);
             
-            // =====================================================================
-            // 🔒 NOVA TRAVA DE SEGURANÇA: Obrigatoriedade do valor contado
-            // =====================================================================
+            const divErroFechamento = document.getElementById('erroFechamento');
+            const txtErroFechamento = document.getElementById('txtErroFechamentoConteudo');
+
+            if (divErroFechamento) divErroFechamento.style.display = 'none';
+            if (txtErroFechamento) txtErroFechamento.textContent = '';
+
+            // 🔒 TRAVA DE SEGURANÇA: Obrigatoriedade do valor contado tratado de forma higienizada
             if (valorContadoRaw === "" || isNaN(valorContado) || valorContado <= 0) {
-                // 🛠️ APONTA PARA A NOVA DIV INTERNA DA TELA DE FECHAMENTO
-                const divErroFechamento = document.getElementById('erroFechamento');
-                
-                // Força o foco no campo para o operador digitar
                 document.getElementById('valorContadoGaveta').focus();
                 document.getElementById('valorContadoGaveta').select();
 
-                // Exibe o erro de forma visual e imediata
-                divErroFechamento.innerText = "⚠️ Preenchimento Obrigatório: Informe o valor total em dinheiro contado na gaveta (deve ser maior que zero)!";
-                divErroFechamento.style.display = 'block';
+                if (txtErroFechamento) txtErroFechamento.textContent = "⚠️ Preenchimento Obrigatório: Informe o valor total em dinheiro contado na gaveta (deve ser maior que zero)!";
+                if (divErroFechamento) divErroFechamento.style.display = 'block';
                 
-                // Remove o aviso da tela após 5 segundos
                 setTimeout(() => {
-                    divErroFechamento.style.display = 'none';
-                    divErroFechamento.innerText = '';
+                    if (divErroFechamento) divErroFechamento.style.display = 'none';
+                    if (txtErroFechamento) txtErroFechamento.textContent = '';
                 }, 5000);
-                return; // Bloqueia o envio para o banco de dados
+                return; 
             }
 
-            // Se o valor for válido, prossegue calculando a quebra/sobra normalmente
-            const esperadoDinheiro = parseFloat(document.getElementById('resumoDinheiroEsperado').innerText.replace('R$ ', ''));
+            // 🌟 SEGURO: Coleta do saldo esperado via textContent limpo
+            const elementoEsperado = document.getElementById('resumoDinheiroEsperado');
+            const esperadoDinheiro = elementoEsperado ? parseFloat(elementoEsperado.textContent.replace('R$ ', '')) : 0.00;
             const diferenca = valorContado - esperadoDinheiro; 
 
             try {
@@ -1421,13 +1477,18 @@
 
                 if (resultado.status === 'sucesso') {
                     const divSucesso = document.getElementById('sucessoLogin');
-                    divSucesso.innerText = "🔒 Caixa encerrado com sucesso! Turno finalizado.";
-                    divSucesso.style.display = 'block';
+                    // 🌟 CORRIGIDO: Logs de sucesso redirecionados para textContent
+                    if (divSucesso) {
+                        divSucesso.textContent = "🔒 Caixa encerrado com sucesso! Turno finalizado.";
+                        divSucesso.style.display = 'block';
+                    }
 
                     document.getElementById('telaFechamento').style.display = 'none';
                     document.getElementById('btnSair').click(); 
                     
-                    setTimeout(() => { divSucesso.style.display = 'none'; }, 5000);
+                    setTimeout(() => { 
+                        if (divSucesso) divSucesso.style.display = 'none'; 
+                    }, 5000);
                 }
             } catch (err) {
                 console.error("Erro crítico no fechamento de caixa:", err);
@@ -1442,14 +1503,12 @@
         });
 
         // Função para atualizar a lista de lançamentos que aparecem na tela do caixa
-        // 🔄 FUNÇÃO ATUALIZADA: Baixa todas as movimentações do turno do banco local
-        // Função para atualizar a lista de lançamentos que aparecem na tela do caixa
         // 🔄 FUNÇÃO CORRIGIDA: Usa o canal 'listar-vendas-turno' correto e repassa o caixaId
         async function atualizarTabelaLancamentosJanela() {
             try {
                 const caixaId = document.getElementById('caixaId').value;
                 
-                // 🌟 CORREÇÃO: Invoca o canal exato mapeado no seu main.js enviando o caixaId
+                // Invoca o canal exato mapeado no seu main.js enviando o caixaId
                 dadosLancamentosCompletos = await ipcRenderer.invoke('listar-vendas-turno', caixaId);
                 
                 // Se o retorno não for um array por segurança, força ser um array vazio
@@ -1466,13 +1525,12 @@
             }
         }
 
-        // 🎨 FUNÇÃO RESPONSÁVEL POR FATIAR E DESENHAR OS LANÇAMENTOS COM NOME DO CLIENTE E REIMPRESSÃO CR
-        // 🎨 FUNÇÃO REESTRUTURADA: Criação nativa de elementos seguros (Sem onclick chumbado na string)
+        // 🎨 FUNÇÃO RESPONSÁVEL POR FATIAR E DESENHAR OS LANÇAMENTOS COM HIGIENIZAÇÃO COMPLETA CONTRA XSS
         function renderizarTabelaLancamentosPrincipal() {
             const corpoTabela = document.getElementById('tabelaLancamentosCorpo');
             if (!corpoTabela) return;
 
-            // Injeta dinamicamente a coluna Cliente no cabeçalho do grid
+            // Injeta dinamicamente a coluna Cliente no cabeçalho do grid de forma estática
             const containerTabela = corpoTabela.closest('table');
             if (containerTabela) {
                 const cabecalho = containerTabela.querySelector('thead tr');
@@ -1492,9 +1550,12 @@
 
             corpoTabela.innerHTML = '';
 
+            // 🌟 SEGURO: Modificação do indicador de página padrão utilizando textContent
+            const indicadorPagina = document.getElementById('txtPaginaLanc');
+
             if (!dadosLancamentosCompletos || dadosLancamentosCompletos.length === 0) {
                 corpoTabela.innerHTML = `<tr><td colspan="8" style="padding: 15px; text-align: center; color: #888; font-style: italic;">Nenhum lançamento registrado neste turno.</td></tr>`;
-                document.getElementById('txtPaginaLanc').innerText = "Página 1 de 1";
+                if (indicadorPagina) indicadorPagina.textContent = "Página 1 de 1";
                 return;
             }
 
@@ -1506,7 +1567,7 @@
             const fim = inicio + itensPorPaginaLanc;
             const itensPagina = dadosLancamentosCompletos.slice(inicio, fim);
 
-            document.getElementById('txtPaginaLanc').innerText = `Página ${paginaAtualLanc} de ${totalPaginas}`;
+            if (indicadorPagina) indicadorPagina.textContent = `Página ${paginaAtualLanc} de ${totalPaginas}`;
 
             itensPagina.forEach(v => {
                 const tipo = (v.origem === 'E' || v.tipo_movimento === 'E') 
@@ -1525,26 +1586,30 @@
                 let estiloColunaCartao = 'color: #888; font-style: italic; background-color: #fdfdfd;'; 
 
                 if (v.forma_pagamento === 'CC') {
-                    bandeiraTexto = v.bandeira || 'Não Inf.';
-                    parcelaTexto = v.parcelas ? `${v.parcelas}x` : '1x';
+                    // 🌟 CORRIGIDO: String de bandeira higienizada antes do processamento
+                    bandeiraTexto = v.bandeira ? escaparHTML(v.bandeira) : 'Não Inf.';
+                    parcelaTexto = v.parcelas ? `${parseInt(v.parcelas)}x` : '1x';
                     estiloColunaCartao = 'color: #2b2b2b; font-weight: bold; font-style: normal;'; 
                 } else if (v.forma_pagamento === 'CR') {
-                    parcelaTexto = v.parcelas ? `${v.parcelas}x` : '1x';
+                    parcelaTexto = v.parcelas ? `${parseInt(v.parcelas)}x` : '1x';
                     estiloColunaCartao = 'color: #2b2b2b; font-style: normal;';
                 }
 
-                const clienteNomeResolvido = v.cliente_nome || 'CONSUMIDOR FINAL';
+                // 🌟 CORRIGIDO: String de nome de cliente sanitizada contra injeção maliciosa de scripts
+                const clienteNomeResolvido = v.cliente_nome ? escaparHTML(v.cliente_nome) : 'CONSUMIDOR FINAL';
                 const clienteCelulaExibicao = v.forma_pagamento === 'CR'
                     ? `<b style="color: #0056b3;">${clienteNomeResolvido}</b>`
                     : `<span style="color: #555;">${clienteNomeResolvido}</span>`;
 
-                const descricaoExibicao = v.descricao_movimento || v.descricao || 'Venda de Produtos';
+                // 🌟 CORRIGIDO: Descrição do movimento sanitizada preventivamente contra tags HTML
+                const descricaoTextoPuro = v.descricao_movimento || v.descricao || 'Venda de Produtos';
+                const descricaoExibicao = escaparHTML(descricaoTextoPuro);
 
-                // Criamos a linha física da tabela
+                // Criamos a linha física da tabela de forma estruturada
                 const linha = document.createElement('tr');
                 linha.innerHTML = `
                     <td style="padding: 8px; border: 1px solid #dee2e6;">${tipo}</td>
-                    <td style="padding: 8px; border: 1px solid #dee2e6; font-weight: bold;">${formaTexto}</td>
+                    <td style="padding: 8px; border: 1px solid #dee2e6; font-weight: bold;">${escaparHTML(formaTexto)}</td>
                     <td style="padding: 8px; border: 1px solid #dee2e6; font-size: 13px;">${clienteCelulaExibicao}</td>
                     <td style="padding: 8px; border: 1px solid #dee2e6; font-size: 13px; ${estiloColunaCartao}">${bandeiraTexto}</td>
                     <td style="padding: 8px; border: 1px solid #dee2e6; font-size: 13px; text-align: center; ${estiloColunaCartao}">${parcelaTexto}</td>
@@ -1555,24 +1620,24 @@
                     </td>
                 `;
 
-                // Capturamos a div que guardará os botões nesta linha específica
+                // Capturamos a div interna que gerencia o ciclo de vida dos botões nesta linha específica
                 const containerAcoes = linha.querySelector('.container-acoes-celula');
 
-                // 🌟 Criando o botão de Exclusão de forma nativa e segura
+                // Criando o botão de Exclusão nativo (Isolado de injeções de string e com manipulador direto)
                 const btnExcluir = document.createElement('button');
-                btnExcluir.innerText = '🗑️ Excluir';
-                btnExcluir.style = "margin-top: 0; padding: 4px 8px; font-size: 12px; background-color: #dc3545; width: auto; font-weight: normal; border: none; color: white; border-radius: 4px; cursor: pointer;";
-                btnExcluir.addEventListener('click', () => dispararExclusao(v.id)); // Event listener direto!
-                containerAcoes.appendChild(btnExcluir);
+                btnExcluir.textContent = '🗑️ Excluir';
+                btnExcluir.style.cssText = "margin-top: 0; padding: 4px 8px; font-size: 12px; background-color: #dc3545; width: auto; font-weight: normal; border: none; color: white; border-radius: 4px; cursor: pointer;";
+                btnExcluir.addEventListener('click', () => dispararExclusao(v.id)); 
+                if (containerAcoes) containerAcoes.appendChild(btnExcluir);
 
-                // 🌟 Criando o botão de Impressão (Apenas para Crediário) de forma nativa
+                // Criando o botão de Impressão nativo de forma reativa caso seja Crediário
                 if (v.forma_pagamento === 'CR') {
                     const btnImprimir = document.createElement('button');
-                    btnImprimir.innerText = '🖨️';
+                    btnImprimir.textContent = '🖨️';
                     btnImprimir.title = 'Reimprimir Comprovante / Promissória';
-                    btnImprimir.style = "margin-top: 0; padding: 4px 8px; font-size: 12px; background-color: #28a745; width: auto; font-weight: normal; border: none; color: white; border-radius: 4px; cursor: pointer;";
-                    btnImprimir.addEventListener('click', () => reimprimirCrediario(v.id)); // Event listener direto!
-                    containerAcoes.appendChild(btnImprimir);
+                    btnImprimir.style.cssText = "margin-top: 0; padding: 4px 8px; font-size: 12px; background-color: #28a745; width: auto; font-weight: normal; border: none; color: white; border-radius: 4px; cursor: pointer;";
+                    btnImprimir.addEventListener('click', () => reimprimirCrediario(v.id)); 
+                    if (containerAcoes) containerAcoes.appendChild(btnImprimir);
                 }
 
                 corpoTabela.appendChild(linha);
@@ -1580,6 +1645,7 @@
         }
 
         // 🎛️ Listeners de controle da paginação do caixa principal
+        // 🎛️ Listeners de controle da paginação do caixa principal (Seguros por padrão)
         document.getElementById('btnLancAnterior').addEventListener('click', () => {
             if (paginaAtualLanc > 1) {
                 paginaAtualLanc--;
@@ -1597,9 +1663,14 @@
 
         // Abre o modal de validação e foca no campo de usuário do gerente
         // 🗑️ Gerenciador de exclusão com interface dinâmica para Administradores
+        // 🗑️ Gerenciador de exclusão com interface dinâmica para Administradores
         window.dispararExclusao = (vendaId) => {
-            document.getElementById('idLancamentoParaExcluir').value = vendaId; //
-            document.getElementById('erroAuthGerente').style.display = 'none'; //
+            document.getElementById('idLancamentoParaExcluir').value = vendaId; 
+            
+            const divErro = document.getElementById('erroAuthGerente');
+            const txtErroAuth = document.getElementById('txtErroAuthGerenteConteudo');
+            if (divErro) divErro.style.display = 'none'; 
+            if (txtErroAuth) txtErroAuth.textContent = ''; 
             
             const usuarioAtualEhAdmin = window.operadorLogado && 
                                         (window.operadorLogado.role === 'admin' || window.operadorLogado.usuario === 'admin');
@@ -1610,81 +1681,87 @@
             const btnConfirmar = document.getElementById('btnConfirmarDeletar');
 
             if (usuarioAtualEhAdmin) {
-                // 🚀 INTERFACE ADMIN: Esconde os inputs do HTML e altera os textos para uma pergunta direta
-                containerCampos.style.display = 'none';
-                tituloModal.innerText = "⚠️ Confirmar Exclusão";
-                subtituloModal.innerHTML = "Você está logado como <strong>Administrador</strong>.<br>Deseja realmente excluir permanentemente este lançamento?";
-                btnConfirmar.innerText = "Sim, Excluir";
+                // 🚀 INTERFACE ADMIN: Esconde os inputs do HTML e altera os textos de forma segura com textContent
+                if (containerCampos) containerCampos.style.display = 'none';
+                if (tituloModal) tituloModal.textContent = "⚠️ Confirmar Exclusão";
+                if (subtituloModal) {
+                    subtituloModal.textContent = "Você está logado como Administrador. Deseja realmente excluir permanentemente este lançamento?";
+                }
+                if (btnConfirmar) btnConfirmar.textContent = "Sim, Excluir";
             } else {
-                // 🔒 INTERFACE OPERADOR COMUM: Restaura os campos de credenciais obrigatórios[cite: 21]
-                containerCampos.style.display = 'block';
-                tituloModal.innerText = "🔒 Autorização de Gerente"; //[cite: 21]
-                subtituloModal.innerText = "Esta ação requer credenciais de um superusuário para ser concluída."; //[cite: 21]
-                btnConfirmar.innerText = "Autorizar e Excluir"; //[cite: 21]
+                // 🔒 INTERFACE OPERADOR COMUM: Restaura os campos de credenciais obrigatórios
+                if (containerCampos) containerCampos.style.display = 'block';
+                if (tituloModal) tituloModal.textContent = "🔒 Autorização de Gerente"; 
+                if (subtituloModal) {
+                    subtituloModal.textContent = "Esta ação requer credenciais de um superusuário para ser concluída."; 
+                }
+                if (btnConfirmar) btnConfirmar.textContent = "Autorizar e Excluir"; 
                 
-                document.getElementById('authGerenteUsuario').value = ''; //[cite: 21]
-                document.getElementById('authGerenteSenha').value = ''; //[cite: 21]
+                document.getElementById('authGerenteUsuario').value = ''; 
+                document.getElementById('authGerenteSenha').value = ''; 
             }
             
-            document.getElementById('modalExclusao').style.display = 'flex'; //[cite: 21]
+            document.getElementById('modalExclusao').style.display = 'flex'; 
             
             if (!usuarioAtualEhAdmin) {
-                document.getElementById('authGerenteUsuario').focus(); //[cite: 21]
+                document.getElementById('authGerenteUsuario').focus(); 
             }
         };
 
-        // Ação de confirmar que envia os dados do gerente + ID do item
-        // Ação do botão confirmar que atende os dois cenários de privilégio
+        // Ação do botão confirmar que atende os dois cenários de privilégio de forma segura
         document.getElementById('btnConfirmarDeletar').addEventListener('click', async () => {
-            const vendaId = document.getElementById('idLancamentoParaExcluir').value; //[cite: 21]
-            const divErro = document.getElementById('erroAuthGerente'); //[cite: 21]
-            divErro.style.display = 'none'; //[cite: 21]
+            const vendaId = document.getElementById('idLancamentoParaExcluir').value; 
+            const divErro = document.getElementById('erroAuthGerente'); 
+            const txtErroAuth = document.getElementById('txtErroAuthGerenteConteudo');
+
+            if (divErro) divErro.style.display = 'none'; 
+            if (txtErroAuth) txtErroAuth.textContent = ''; 
 
             const usuarioAtualEhAdmin = window.operadorLogado && 
                                         (window.operadorLogado.role === 'admin' || window.operadorLogado.usuario === 'admin');
 
             // 1. Cenário se o operador atual já for Administrador (Validação Direta)
             if (usuarioAtualEhAdmin) {
-                const resultado = await ipcRenderer.invoke('excluir-lancamento', vendaId); //[cite: 21]
-                if (resultado.status === 'sucesso') { //[cite: 21]
-                    document.getElementById('modalExclusao').style.display = 'none'; //[cite: 21]
-                    await atualizarTabelaLancamentosJanela(); //[cite: 21]
+                const resultado = await ipcRenderer.invoke('excluir-lancamento', vendaId); 
+                if (resultado.status === 'sucesso') { 
+                    document.getElementById('modalExclusao').style.display = 'none'; 
+                    await atualizarTabelaLancamentosJanela(); 
                 } else {
-                    divErro.innerText = `❌ Erro ao excluir: ${resultado.mensagem}`;
-                    divErro.style.display = 'block';
+                    if (txtErroAuth) txtErroAuth.textContent = `❌ Erro ao excluir: ${resultado.mensagem}`;
+                    if (divErro) divErro.style.display = 'block';
                 }
-                return; // Aborta para não rodar a verificação de inputs abaixo
+                return; 
             }
 
-            // 2. Cenário Padrão: Operador comum precisa colher credenciais do modal[cite: 21]
-            const usuarioGerente = document.getElementById('authGerenteUsuario').value.trim(); //[cite: 21]
-            const senhaGerente = document.getElementById('authGerenteSenha').value; //[cite: 21]
+            // 2. Cenário Padrão: Operador comum precisa colher credenciais do modal
+            const usuarioGerente = document.getElementById('authGerenteUsuario').value.trim(); 
+            const senhaGerente = document.getElementById('authGerenteSenha').value; 
 
-            if (!usuarioGerente || !senhaGerente) { //[cite: 21]
-                divErro.innerText = "⚠️ Preencha as credenciais do gerente!"; //[cite: 21]
-                divErro.style.display = 'block'; //[cite: 21]
-                return; //[cite: 21]
+            if (!usuarioGerente || !senhaGerente) { 
+                if (txtErroAuth) txtErroAuth.textContent = "⚠️ Preencha as credenciais do gerente!"; 
+                if (divErro) divErro.style.display = 'block'; 
+                return; 
             }
 
-            const auth = await ipcRenderer.invoke('tentar-login', { usuario: usuarioGerente, senha: senhaGerente }); //[cite: 21]
+            const auth = await ipcRenderer.invoke('tentar-login', { usuario: usuarioGerente, senha: senhaGerente }); 
 
-            if (auth.status === 'sucesso') { //[cite: 21]
-                if (auth.operador.role === 'admin' || auth.operador.usuario === 'admin') { //[cite: 21]
-                    const resultado = await ipcRenderer.invoke('excluir-lancamento', vendaId); //[cite: 21]
-                    if (resultado.status === 'sucesso') { //[cite: 21]
-                        document.getElementById('modalExclusao').style.display = 'none'; //[cite: 21]
-                        await atualizarTabelaLancamentosJanela(); //[cite: 21]
+            if (auth.status === 'sucesso') { 
+                if (auth.operador.role === 'admin' || auth.operador.usuario === 'admin') { 
+                    const resultado = await ipcRenderer.invoke('excluir-lancamento', vendaId); 
+                    if (resultado.status === 'sucesso') { 
+                        document.getElementById('modalExclusao').style.display = 'none'; 
+                        await atualizarTabelaLancamentosJanela(); 
                     } else {
-                        divErro.innerText = `❌ Erro ao excluir: ${resultado.mensagem}`;
-                        divErro.style.display = 'block';
+                        if (txtErroAuth) txtErroAuth.textContent = `❌ Erro ao excluir: ${resultado.mensagem}`;
+                        if (divErro) divErro.style.display = 'block';
                     }
                 } else {
-                    divErro.innerText = "❌ Acesso Negado: Este operador não possui privilégios de Administrador."; //[cite: 21]
-                    divErro.style.display = 'block'; //[cite: 21]
+                    if (txtErroAuth) txtErroAuth.textContent = "❌ Acesso Negado: Este operador não possui privilégios de Administrador."; 
+                    if (divErro) divErro.style.display = 'block'; 
                 }
             } else {
-                divErro.innerText = "❌ Usuário ou Senha master inválidos."; //[cite: 21]
-                divErro.style.display = 'block'; //[cite: 21]
+                if (txtErroAuth) txtErroAuth.textContent = "❌ Usuário ou Senha master inválidos."; 
+                if (divErro) divErro.style.display = 'block'; 
             }
         });
 
@@ -1699,32 +1776,42 @@
             const botao = document.getElementById('btnToggleLancamentos');
 
             if (container.style.display === 'none') {
-                // Se está escondido, exibe a div e muda o texto do botão
                 container.style.display = 'block';
-                botao.innerText = '🔼 Ocultar Lançamentos do Turno';
-                botao.style.backgroundColor = '#495057'; // Escurece um pouco o botão ativo
+                // 🌟 SEGURO: Modificação de rótulo de controle via textContent
+                if (botao) botao.textContent = '🔼 Ocultar Lançamentos do Turno';
+                if (botao) botao.style.backgroundColor = '#495057'; 
             } else {
-                // Se está visível, esconde a div e volta o texto original
                 container.style.display = 'none';
-                botao.innerText = '📋 Ver Lançamentos do Turno';
-                botao.style.backgroundColor = '#6c757d'; // Volta para a cor padrão cinza
+                // 🌟 SEGURO: Modificação de rótulo de controle via textContent
+                if (botao) botao.textContent = '📋 Ver Lançamentos do Turno';
+                if (botao) botao.style.backgroundColor = '#6c757d'; 
             }
         });
 
         // 📊 CONTROLE DE HISTÓRICO POR TURNO (ONLINE E ADMIN EXCLUSIVO)
         // 📊 LISTAGEM DO HISTÓRICO COM SUPORTE A PAGINAÇÃO (MÁX 10)
         // 📊 CONTROLE DE HISTÓRICO POR TURNO COM FILTRO DINÂMICO
+        // 📊 Ouvinte para carregamento e transição de tela do histórico corporativo
         document.getElementById('btnVerHistorico').addEventListener('click', async () => {
             const statusDiv = document.getElementById('statusLog');
+            const txtStatusConteudo = document.getElementById('txtStatusLogConteudo');
             
             const ehAdmin = window.operadorLogado && 
                             (window.operadorLogado.role === 'admin' || window.operadorLogado.usuario === 'admin');
 
             if (!ehAdmin) {
-                statusDiv.style.display = 'block';
-                statusDiv.className = 'msg-box erro';
-                statusDiv.innerText = "🚫 Acesso Negado: Esta consulta é de uso exclusivo de administradores!";
-                setTimeout(() => { statusDiv.style.display = 'none'; }, 5000);
+                if (statusDiv) statusDiv.style.display = 'block';
+                if (statusDiv) statusDiv.className = 'msg-box erro';
+                
+                // 🌟 CORRIGIDO: Injeção de mensagem de erro via textContent seguro
+                if (txtStatusConteudo) {
+                    txtStatusConteudo.textContent = "🚫 Acesso Negado: Esta consulta é de uso exclusivo de administradores!";
+                }
+                
+                setTimeout(() => { 
+                    if (statusDiv) statusDiv.style.display = 'none'; 
+                    if (txtStatusConteudo) txtStatusConteudo.textContent = '';
+                }, 5000);
                 return;
             }
 
@@ -1737,7 +1824,9 @@
             document.getElementById('filtroDataInicio').value = umaSemanaAtras.toISOString().split('T')[0];
             document.getElementById('filtroDataFim').value = hoje.toISOString().split('T')[0];
 
-            statusDiv.style.display = 'none';
+            if (statusDiv) statusDiv.style.display = 'none';
+            if (txtStatusConteudo) txtStatusConteudo.textContent = '';
+            
             document.getElementById('painelDetalheTurno').style.display = 'none'; 
             document.getElementById('telaCaixa').style.display = 'none'; 
             document.getElementById('telaHistorico').style.display = 'block'; 
@@ -1746,7 +1835,7 @@
             await carregarDadosHistoricoFiltrado();
         });
 
-        // 🌟 NOVO: Listener para o botão de Refresh/Filtrar dentro da tela do histórico
+        // Listener para o botão de Refresh/Filtrar dentro da tela do histórico
         document.getElementById('btnAplicarFiltroHist').addEventListener('click', async () => {
             await carregarDadosHistoricoFiltrado();
         });
@@ -1756,45 +1845,45 @@
             const corpoTabela = document.getElementById('tabelaHistoricoCorpo');
             const campoDataInicio = document.getElementById('filtroDataInicio');
             const campoDataFim = document.getElementById('filtroDataFim');
+            
             const divErroFiltro = document.getElementById('erroFiltroHist');
+            const txtErroFiltro = document.getElementById('txtErroFiltroHistConteudo');
 
             const dataInicio = campoDataInicio.value;
             const dataFim = campoDataFim.value;
 
             // Oculta o erro por padrão a cada nova tentativa de filtragem
-            divErroFiltro.style.display = 'none';
-            divErroFiltro.innerText = '';
+            if (divErroFiltro) divErroFiltro.style.display = 'none';
+            if (txtErroFiltro) txtErroFiltro.textContent = '';
 
-            // 🌟 VALIDAÇÃO INTEGRADA NO HTML: Se a data inicial for maior que a final, corrige e avisa
+            // VALIDAÇÃO INTEGRADA NO HTML: Se a data inicial for maior que a final, corrige e avisa
             if (dataInicio && dataFim) {
                 if (dataInicio > dataFim) {
-                    // Ajusta automaticamente a data inicial para ficar igual à final
                     campoDataInicio.value = dataFim;
                     
-                    // Exibe o aviso vermelho diretamente na estrutura do card HTML
-                    divErroFiltro.innerText = "⚠️ Ajuste Automático: A data inicial não pode ser maior que a data final. O campo foi igualado ao limite final para viabilizar a busca.";
-                    divErroFiltro.style.display = 'block';
+                    // 🌟 CORRIGIDO: Aviso de data inválida redirecionado para o nó de texto textContent
+                    if (txtErroFiltro) {
+                        txtErroFiltro.textContent = "⚠️ Ajuste Automático: A data inicial não pode ser maior que a data final. O campo foi igualado ao limite final para viabilizar a busca.";
+                    }
+                    if (divErroFiltro) divErroFiltro.style.display = 'block';
 
-                    // Agenda o sumiço automático do aviso em 8 segundos
                     setTimeout(() => {
-                        divErroFiltro.style.display = 'none';
-                        divErroFiltro.innerText = '';
+                        if (divErroFiltro) divErroFiltro.style.display = 'none';
+                        if (txtErroFiltro) txtErroFiltro.textContent = '';
                     }, 8000);
                     
-                    return; // Interrompe para o operador clicar novamente com o cenário corrigido
+                    return; 
                 }
             }
 
-            // CORREÇÃO DE BUG: Oculta e limpa o painel de extrato detalhado do turno anterior
+            // CORREÇÃO DE BUG E REMOÇÃO DE ID DUPLICADO: Oculta e reseta o painel detalhado de forma limpa
             const painelDetalhe = document.getElementById('painelDetalheTurno');
             if (painelDetalhe) {
                 painelDetalhe.style.display = 'none';
             }
             
-            let corpoDetalhe = document.getElementById('tabelaDetalheTurnoCorpo');
-            if (!corpoDetalhe) {
-                corpoDetalhe = document.getElementById('tabelaDetailTurnoCorpo');
-            }
+            // 🌟 CORRIGIDO: Captura unificada e direta sem fallback redundante
+            const corpoDetalhe = document.getElementById('tabelaDetalheTurnoCorpo');
             if (corpoDetalhe) {
                 corpoDetalhe.innerHTML = '';
             }
@@ -1802,7 +1891,9 @@
             dadosDetalheCompletos = [];
             paginaAtualDet = 1;
 
-            corpoTabela.innerHTML = `<tr><td colspan="8" style="padding: 15px; text-align: center; color: #666;">Buscando dados filtrados no servidor...</td></tr>`;
+            if (corpoTabela) {
+                corpoTabela.innerHTML = `<tr><td colspan="8" style="padding: 15px; text-align: center; color: #666;">Buscando dados filtrados no servidor...</td></tr>`;
+            }
             
             try {
                 // Passa as datas limites ja validadas para o processo Main
@@ -1812,7 +1903,9 @@
                 });
                 
                 if (resposta.status === 'offline') {
-                    corpoTabela.innerHTML = `<tr><td colspan="8" style="padding: 15px; text-align: center; color: #721c24; background-color: #f8d7da;">⚠️ ${resposta.mensagem}</td></tr>`;
+                    if (corpoTabela) {
+                        corpoTabela.innerHTML = `<tr><td colspan="8" style="padding: 15px; text-align: center; color: #721c24; background-color: #f8d7da;">⚠️ ${escaparHTML(resposta.mensagem)}</td></tr>`;
+                    }
                     return;
                 }
 
@@ -1821,18 +1914,24 @@
                 renderizarTabelaHistorico();
 
             } catch (error) {
-                corpoTabela.innerHTML = `<tr><td colspan="8" style="padding: 15px; text-align: center; color: #721c24;">❌ Erro ao processar requisição: ${error.message}</td></tr>`;
+                if (corpoTabela) {
+                    corpoTabela.innerHTML = `<tr><td colspan="8" style="padding: 15px; text-align: center; color: #721c24;">❌ Erro ao processar requisição: ${escaparHTML(error.message)}</td></tr>`;
+                }
             }
         }
 
         // Função responsável por fatiar e desenhar as 10 linhas do histórico na tela
         function renderizarTabelaHistorico() {
             const corpoTabela = document.getElementById('tabelaHistoricoCorpo');
+            if (!corpoTabela) return;
+            
             corpoTabela.innerHTML = '';
 
+            const indicadorPaginaHist = document.getElementById('txtPaginaHist');
+
             if (dadosHistoricoCompletos.length === 0) {
-                corpoTabela.innerHTML = `<tr><td colspan="8" style="padding: 15px; text-align: center; color: #999;">Nenum turno fechado encontrado no servidor.</td></tr>`;
-                document.getElementById('txtPaginaHist').innerText = "Página 1 de 1";
+                corpoTabela.innerHTML = `<tr><td colspan="8" style="padding: 15px; text-align: center; color: #999;">Nenhum turno fechado encontrado no servidor.</td></tr>`;
+                if (indicadorPaginaHist) indicadorPaginaHist.textContent = "Página 1 de 1";
                 return;
             }
 
@@ -1845,10 +1944,10 @@
             const fim = inicio + itensPorPaginaHist;
             const itensPagina = dadosHistoricoCompletos.slice(inicio, fim);
 
-            document.getElementById('txtPaginaHist').innerText = `Página ${paginaAtualHist} de ${totalPaginas}`;
+            if (indicadorPaginaHist) indicadorPaginaHist.textContent = `Página ${paginaAtualHist} de ${totalPaginas}`;
 
             itensPagina.forEach(t => {
-                const dataAbertura = new Date(t.data_abertura).toLocaleString('pt-BR');
+                const dataAbertura = t.data_abertura ? new Date(t.data_abertura).toLocaleString('pt-BR') : '—';
                 const dataFechamento = t.data_fechamento && t.data_fechamento !== 'Finalizado'
                     ? new Date(t.data_fechamento).toLocaleString('pt-BR') 
                     : 'N/A';
@@ -1868,16 +1967,24 @@
 
                 const linha = document.createElement('tr');
                 linha.style.cursor = 'pointer';
-                const idDoCaixa = t.caixa_id || ''; 
-                linha.setAttribute('onclick', `verDetalhesDoTurno('${idDoCaixa}', '${t.data_abertura}', '${t.data_fechamento || ''}')`);
+                
+                // 🌟 CORREÇÃO DE SEGURANÇA (Anti-XSS): Armazena as propriedades nativamente no dataset
+                linha.dataset.caixaId = t.caixa_id || '';
+                linha.dataset.dataAbertura = t.data_abertura || '';
+                linha.dataset.dataFechamento = t.data_fechamento || '';
+
+                // Vincular o evento através de addEventListener elimina qualquer risco de quebra de escopo ou XSS
+                linha.addEventListener('click', () => {
+                    verDetalhesDoTurno(linha.dataset.caixaId, linha.dataset.dataAbertura, linha.dataset.dataFechamento);
+                });
 
                 linha.innerHTML = `
-                    <td style="padding: 8px; border: 1px solid #dee2e6;">${t.caixa_nome}</td>
-                    <td style="padding: 8px; border: 1px solid #dee2e6;">${t.operador_nome}</td>
-                    <td style="padding: 8px; border: 1px solid #dee2e6; font-size: 11px;">${dataAbertura}</td>
-                    <td style="padding: 8px; border: 1px solid #dee2e6; font-size: 11px;">${dataFechamento}</td>
-                    <td style="padding: 8px; border: 1px solid #dee2e6; color: green;">R$ ${parseFloat(t.valor_abertura).toFixed(2)}</td>
-                    <td style="padding: 8px; border: 1px solid #dee2e6; color: #007bff; font-weight: bold;">R$ ${parseFloat(t.valor_fechamento).toFixed(2)}</td>
+                    <td style="padding: 8px; border: 1px solid #dee2e6;">${escaparHTML(t.caixa_nome)}</td>
+                    <td style="padding: 8px; border: 1px solid #dee2e6;">${escaparHTML(t.operador_nome)}</td>
+                    <td style="padding: 8px; border: 1px solid #dee2e6; font-size: 11px;">${escaparHTML(dataAbertura)}</td>
+                    <td style="padding: 8px; border: 1px solid #dee2e6; font-size: 11px;">${escaparHTML(dataFechamento)}</td>
+                    <td style="padding: 8px; border: 1px solid #dee2e6; color: green;">R$ ${parseFloat(t.valor_abertura || 0).toFixed(2)}</td>
+                    <td style="padding: 8px; border: 1px solid #dee2e6; color: #007bff; font-weight: bold;">R$ ${parseFloat(t.valor_fechamento || 0).toFixed(2)}</td>
                     <td style="padding: 8px; border: 1px solid #dee2e6; font-weight: bold; color: #555;">R$ ${valorContado.toFixed(2)}</td>
                     <td style="padding: 8px; border: 1px solid #dee2e6; ${estiloDiferenca}">R$ ${sinal}${diferenca.toFixed(2)}</td>
                 `;
@@ -1885,7 +1992,7 @@
             });
         }
 
-        // Listeners dos Botões do Histórico
+        // Listeners dos Botões do Histórico (Mantidos seguros)
         document.getElementById('btnHistAnterior').addEventListener('click', () => {
             if (paginaAtualHist > 1) { paginaAtualHist--; renderizarTabelaHistorico(); }
         });
@@ -1894,16 +2001,13 @@
             if (paginaAtualHist < totalPaginas) { paginaAtualHist++; renderizarTabelaHistorico(); }
         });
 
-        // 📋 Detalhes das movimentações do período selecionado: Abre o extrato detalhado do turno clicado
-        // 📋 FUNÇÃO AUDIO-VISUAL: Abre o extrato detalhado do turno clicado
-        // 📋 FUNÇÃO ATUALIZADA: Extrato Detalhado com Cores Dinâmicas e Dados de Cartão
-        // 📋 EXTRATO DETALHADO DO TURNO SELECIONADO COM PAGINAÇÃO (MÁX 20)
-        // 📋 EXTRATO DETALHADO DO TURNO SELECIONADO COM PAGINAÇÃO CORRIGIDA (MÁX 20)
+        // 📋 Extrato de Lançamentos do Turno Clicado
         window.verDetalhesDoTurno = async (caixaId, dataAbertura, dataFechamento) => {
             const idAlvo = (caixaId && caixaId !== 'undefined' && caixaId !== '') ? caixaId : document.getElementById('caixaId').value;
             const statusDiv = document.getElementById('statusLog');
+            const txtStatusConteudo = document.getElementById('txtStatusLogConteudo');
             
-            // 🌟 MODIFICADO: Captura limpa, sem fallback ou rechecagem de id duplicado
+            // Captura limpa, sem fallback ou rechecagem de id duplicado
             const corpoDetalhe = document.getElementById('tabelaDetalheTurnoCorpo');
             if (corpoDetalhe) {
                 corpoDetalhe.innerHTML = `<tr><td colspan="8" style="padding: 10px; text-align: center; color: #666;">Carregando extrato do turno...</td></tr>`;
@@ -1915,10 +2019,18 @@
                 const resposta = await ipcRenderer.invoke('obter-vendas-periodo', { caixaId: idAlvo, dataAbertura, dataFechamento });
                 
                 if (resposta.status === 'offline') {
-                    statusDiv.style.display = 'block';
-                    statusDiv.className = 'msg-box erro';
-                    statusDiv.innerText = `⚠️ Detalhamento Indisponível: ${resposta.mensagem}`;
-                    setTimeout(() => { statusDiv.style.display = 'none'; }, 5000);
+                    if (statusDiv) statusDiv.style.display = 'block';
+                    if (statusDiv) statusDiv.className = 'msg-box erro';
+                    
+                    // 🌟 CORRIGIDO: Mensagens de erro externas passam obrigatoriamente por textContent
+                    if (txtStatusConteudo) {
+                        txtStatusConteudo.textContent = `⚠️ Detalhamento Indisponível: ${resposta.mensagem}`;
+                    }
+                    setTimeout(() => { 
+                        if (statusDiv) statusDiv.style.display = 'none'; 
+                        if (txtStatusConteudo) txtStatusConteudo.textContent = '';
+                    }, 5000);
+
                     if (corpoDetalhe) {
                         corpoDetalhe.innerHTML = `<tr><td colspan="8" style="padding: 10px; text-align: center; color: #dc3545;">Erro: Conexão offline.</td></tr>`;
                     }
@@ -1940,15 +2052,18 @@
 
         // Função responsável por fatiar e desenhar as 20 linhas do extrato operacional
         function renderizarTabelaDetalhe() {
-            // 🌟 MODIFICADO: Captura direta
+            // Captura direta padronizada e higienizada
             const corpoDetalhe = document.getElementById('tabelaDetalheTurnoCorpo');
             if (!corpoDetalhe) return; 
             
             corpoDetalhe.innerHTML = '';
 
+            const indicadorPaginaDet = document.getElementById('txtPaginaDet');
+
             if (dadosDetalheCompletos.length === 0) {
+                // 🌟 CORRIGIDO: Colspan ajustado para 8 colunas vigentes
                 corpoDetalhe.innerHTML = `<tr><td colspan="8" style="padding: 10px; text-align: center; color: #999;">Nenhuma venda ou movimentação registrada neste turno.</td></tr>`;
-                document.getElementById('txtPaginaDet').innerText = "Página 1 de 1";
+                if (indicadorPaginaDet) indicadorPaginaDet.textContent = "Página 1 de 1";
                 return;
             }
 
@@ -1960,7 +2075,7 @@
             const fim = inicio + itensPorPaginaDet;
             const itensPagina = dadosDetalheCompletos.slice(inicio, fim);
 
-            document.getElementById('txtPaginaDet').innerText = `Página ${paginaAtualDet} de ${totalPaginas}`;
+            if (indicadorPaginaDet) indicadorPaginaDet.textContent = `Página ${paginaAtualDet} de ${totalPaginas}`;
 
             itensPagina.forEach(v => {
                 const dataObjeto = new Date(v.data_venda || v.data_movimento);
@@ -1971,7 +2086,7 @@
                 const tipoTexto = ehEntrada ? '<span style="color:green;font-weight:bold;">📥 Entrada</span>' : '<span style="color:red;font-weight:bold;">📤 Saída</span>';
                 const estiloValor = ehEntrada ? 'color: #28a745; font-weight: bold; text-align: right;' : 'color: #dc3545; font-weight: bold; text-align: right;';
 
-                const formasNome = { DN: 'Dinheiro', CC: 'C. Crédito', CD: 'C. Débito', PX: 'Pix' };
+                const formasNome = { DN: 'Dinheiro', CC: 'C. Crédito', CD: 'C. Débito', PX: 'Pix', CR: 'Crediário' };
                 const formaTexto = formasNome[v.forma_pagamento] || v.forma_pagamento || 'Dinheiro';
 
                 let bandeiraTexto = '—';
@@ -1979,27 +2094,41 @@
                 let estiloColunaCartao = 'color: #888; font-style: italic; background-color: #fdfdfd;';
 
                 if (v.forma_pagamento === 'CC') {
-                    bandeiraTexto = v.bandeira || 'Não Inf.';
-                    parcelaTexto = v.parcelas ? `${v.parcelas}x` : '1x';
+                    bandeiraTexto = v.bandeira ? escaparHTML(v.bandeira) : 'Não Inf.';
+                    parcelaTexto = v.parcelas ? `${parseInt(v.parcelas)}x` : '1x';
                     estiloColunaCartao = 'color: #2b2b2b; font-weight: bold; font-style: normal;';
+                } else if (v.forma_pagamento === 'CR') {
+                    parcelaTexto = v.parcelas ? `${parseInt(v.parcelas)}x` : '1x';
+                    estiloColunaCartao = 'color: #2b2b2b; font-style: normal;';
                 }
 
+                const clienteNomeResolvido = v.cliente_nome ? escaparHTML(v.cliente_nome) : 'CONSUMIDOR FINAL';
+                const clienteCelulaExibicao = v.forma_pagamento === 'CR'
+                    ? `<b style="color: #0056b3;">${clienteNomeResolvido}</b>`
+                    : `<span style="color: #333;">${clienteNomeResolvido}</span>`;
+
+                const descricaoCrua = v.descricao_movimento || v.descricao || 'Sem descrição';
+                const descricaoExibicao = escaparHTML(descricaoCrua);
+
                 const inline = document.createElement('tr');
+                // 🌟 CORRIGIDO: Data e Hora concatenadas na mesma célula e remoção da TD extra de hora
                 inline.innerHTML = `
-                    <td style="padding: 6px; border: 1px solid #dee2e6; font-size: 13px;">${dataVendaFormatada}</td>
-                    <td style="padding: 6px; border: 1px solid #dee2e6; font-size: 12px; color: #555;">${horaFormatada}</td>
+                    <td style="padding: 6px; border: 1px solid #dee2e6; font-size: 13px;">
+                        ${escaparHTML(dataVendaFormatada)} <span style="color: #666; font-size: 11px; margin-left: 4px;">${escaparHTML(horaFormatada)}</span>
+                    </td>
                     <td style="padding: 6px; border: 1px solid #dee2e6;">${tipoTexto}</td>
-                    <td style="padding: 6px; border: 1px solid #dee2e6; font-size: 13px; font-weight: bold;">${formaTexto}</td>
+                    <td style="padding: 6px; border: 1px solid #dee2e6; font-size: 13px;">${clienteCelulaExibicao}</td>
+                    <td style="padding: 6px; border: 1px solid #dee2e6; font-size: 13px; font-weight: bold;">${escaparHTML(formaTexto)}</td>
                     <td style="padding: 6px; border: 1px solid #dee2e6; font-size: 13px; ${estiloColunaCartao}">${bandeiraTexto}</td>
                     <td style="padding: 6px; border: 1px solid #dee2e6; font-size: 13px; text-align: center; ${estiloColunaCartao}">${parcelaTexto}</td>
-                    <td style="padding: 6px; border: 1px solid #dee2e6; color: #666; font-size: 13px;">${v.descricao_movimento || v.descricao || '<em>Sem descrição</em>'}</td>
+                    <td style="padding: 6px; border: 1px solid #dee2e6; color: #666; font-size: 13px;">${descricaoExibicao}</td>
                     <td style="padding: 6px; border: 1px solid #dee2e6; ${estiloValor}">R$ ${parseFloat(v.total || v.valor || 0).toFixed(2)}</td>
                 `;
                 corpoDetalhe.appendChild(inline);
             });
         }
 
-        // Listeners dos Botões de Detalhes
+        // Listeners dos Botões de Detalhes (Mantidos estáveis e seguros)
         document.getElementById('btnDetAnterior').addEventListener('click', () => {
             if (paginaAtualDet > 1) { paginaAtualDet--; renderizarTabelaDetalhe(); }
         });
@@ -2012,12 +2141,12 @@
         document.getElementById('btnVoltarHistorico').addEventListener('click', () => {
             document.getElementById('telaHistorico').style.display = 'none';
             document.getElementById('telaCaixa').style.display = 'block';
+            document.getElementById('origem').focus();
         });
 
         // =====================================================================
         // 🔄 ROTINAS OPERACIONAIS DO PAINEL DE SINCRONIZAÇÃO MANUAL
         // =====================================================================
-        
         document.getElementById('btnVerSincronizacao').addEventListener('click', async () => {
             document.getElementById('telaCaixa').style.display = 'none';
             document.getElementById('telaSincronizacao').style.display = 'block';
@@ -2028,6 +2157,7 @@
         document.getElementById('btnVoltarSincronizacao').addEventListener('click', () => {
             document.getElementById('telaSincronizacao').style.display = 'none';
             document.getElementById('telaCaixa').style.display = 'block';
+            document.getElementById('origem').focus();
         });
 
         document.getElementById('btnRefreshSincronizacao').addEventListener('click', async () => {
@@ -2038,35 +2168,46 @@
         async function atualizarContadoresSincronizacao() {
             const status = await ipcRenderer.invoke('obter-status-sincronizacao');
             
-            // Injeta os valores coletados do SQLite na interface
-            document.getElementById('txtTotalVendas').innerText = status.vendas.total;
-            document.getElementById('txtPendentesVendas').innerText = status.vendas.pendentes;
-            document.getElementById('btnSyncVendas').disabled = (status.vendas.pendentes === 0);
-            document.getElementById('btnSyncVendas').style.opacity = (status.vendas.pendentes === 0) ? '0.5' : '1';
+            // 🌟 CORRIGIDO: Injeta os valores numéricos e contadores na interface utilizando textContent seguro
+            if (document.getElementById('txtTotalVendas')) document.getElementById('txtTotalVendas').textContent = status.vendas.total;
+            if (document.getElementById('txtPendentesVendas')) document.getElementById('txtPendentesVendas').textContent = status.vendas.pendentes;
+            if (document.getElementById('btnSyncVendas')) {
+                document.getElementById('btnSyncVendas').disabled = (status.vendas.pendentes === 0);
+                document.getElementById('btnSyncVendas').style.opacity = (status.vendas.pendentes === 0) ? '0.5' : '1';
+            }
 
-            document.getElementById('txtTotalTurnos').innerText = status.turnos.total;
-            document.getElementById('txtPendentesTurnos').innerText = status.turnos.pendentes;
-            document.getElementById('btnSyncTurnos').disabled = (status.turnos.pendentes === 0);
-            document.getElementById('btnSyncTurnos').style.opacity = (status.turnos.pendentes === 0) ? '0.5' : '1';
+            if (document.getElementById('txtTotalTurnos')) document.getElementById('txtTotalTurnos').textContent = status.turnos.total;
+            if (document.getElementById('txtPendentesTurnos')) document.getElementById('txtPendentesTurnos').textContent = status.turnos.pendentes;
+            if (document.getElementById('btnSyncTurnos')) {
+                document.getElementById('btnSyncTurnos').disabled = (status.turnos.pendentes === 0);
+                document.getElementById('btnSyncTurnos').style.opacity = (status.turnos.pendentes === 0) ? '0.5' : '1';
+            }
 
-            document.getElementById('txtTotalRecebiveis').innerText = status.recebiveis.total;
-            document.getElementById('txtPendentesRecebiveis').innerText = status.recebiveis.pendentes;
-            document.getElementById('btnSyncRecebiveis').disabled = (status.recebiveis.pendentes === 0);
-            document.getElementById('btnSyncRecebiveis').style.opacity = (status.recebiveis.pendentes === 0) ? '0.5' : '1';
+            if (document.getElementById('txtTotalRecebiveis')) document.getElementById('txtTotalRecebiveis').textContent = status.recebiveis.total;
+            if (document.getElementById('txtPendentesRecebiveis')) document.getElementById('txtPendentesRecebiveis').textContent = status.recebiveis.pendentes;
+            if (document.getElementById('btnSyncRecebiveis')) {
+                document.getElementById('btnSyncRecebiveis').disabled = (status.recebiveis.pendentes === 0);
+                document.getElementById('btnSyncRecebiveis').style.opacity = (status.recebiveis.pendentes === 0) ? '0.5' : '1';
+            }
 
-            // 🌟 ADICIONADO: Atualiza os dados de Crediário na Interface
-            document.getElementById('txtTotalCrediario').innerText = status.crediario ? status.crediario.total : 0;
-            document.getElementById('txtPendentesCrediario').innerText = status.crediario ? status.crediario.pendentes : 0;
-            const temCrediarioPendente = status.crediario && status.crediario.pendentes > 0;
-            document.getElementById('btnSyncCrediario').disabled = !temCrediarioPendente;
-            document.getElementById('btnSyncCrediario').style.opacity = !temCrediarioPendente ? '0.5' : '1';
+            // Atualiza os dados de Crediário na Interface de forma blindada
+            if (document.getElementById('txtTotalCrediario')) {
+                document.getElementById('txtTotalCrediario').textContent = status.crediario ? status.crediario.total : 0;
+            }
+            if (document.getElementById('txtPendentesCrediario')) {
+                document.getElementById('txtPendentesCrediario').textContent = status.crediario ? status.crediario.pendentes : 0;
+            }
+            if (document.getElementById('btnSyncCrediario')) {
+                const temCrediarioPendente = status.crediario && status.crediario.pendentes > 0;
+                document.getElementById('btnSyncCrediario').disabled = !temCrediarioPendente;
+                document.getElementById('btnSyncCrediario').style.opacity = !temCrediarioPendente ? '0.5' : '1';
+            }
         }
 
-        // Listeners de execução de sincronização manual por demanda de tabela
+        // Listeners de execução de sincronização manual por demanda de tabela (Mantidos estáveis)
         document.getElementById('btnSyncVendas').addEventListener('click', () => dispararFluxoSyncTabela('vendas'));
         document.getElementById('btnSyncTurnos').addEventListener('click', () => dispararFluxoSyncTabela('turnos'));
         document.getElementById('btnSyncRecebiveis').addEventListener('click', () => dispararFluxoSyncTabela('recebiveis'));
-        // Listener de execução manual para o Crediário
         document.getElementById('btnSyncCrediario').addEventListener('click', () => dispararFluxoSyncTabela('crediario'));
 
         async function dispararFluxoSyncTabela(tipo) {
@@ -2075,8 +2216,8 @@
             
             if (resposta.status === 'sucesso') {
                 resposta.logs.forEach(msg => {
-                    console.log(msg); // Imprime no Terminal do VSCode/Console
-                    imprimirNoConsoleSync(msg); // Imprime no Monitor HTML
+                    console.log(msg); 
+                    imprimirNoConsoleSync(msg); 
                 });
                 await atualizarContadoresSincronizacao();
             } else {
@@ -2088,69 +2229,76 @@
         function imprimirNoConsoleSync(mensagem) {
             const caixaConsole = document.getElementById('consoleLogSync');
             if (caixaConsole) {
-                caixaConsole.innerHTML += `<br>${mensagem}`;
-                caixaConsole.scrollTop = caixaConsole.scrollHeight; // Auto scroll pro final
+                // 🌟 CORRIGIDO: O texto do log passa por escaparHTML antes de ser injetado para evitar XSS no console de auditoria
+                caixaConsole.innerHTML += `<br>${escaparHTML(mensagem)}`;
+                caixaConsole.scrollTop = caixaConsole.scrollHeight; 
             }
         }
 
         function limparConsoleSync(mensagemInicial) {
             const caixaConsole = document.getElementById('consoleLogSync');
-            if (caixaConsole) caixaConsole.innerHTML = mensagemInicial;
+            // 🌟 CORRIGIDO: Reset inicial do console tratado puramente como nó de texto seguro
+            if (caixaConsole) caixaConsole.textContent = mensagemInicial;
         }
 
-        // 🔍 LÓGICA DE AUTOCOMPLETE DINÂMICO DE CLIENTES (COM SUPORTE A NAVEGAÇÃO VIA TECLADO)
+        // =====================================================================
+        // 🔍 MOTOR DE AUTOCOMPLETE E FILTRAGEM DE CLIENTES EM MEMÓRIA
+        // =====================================================================
         const inputBuscaCliente = document.getElementById('buscaCliente');
         const divSugestoes = document.getElementById('sugestoesCliente');
         const hiddenClienteId = document.getElementById('clienteSelecionadoId');
         const cardAlertaBloqueio = document.getElementById('alertaClienteBloqueado');
+        const txtAlertaBloqueioConteudo = document.getElementById('txtAlertaClienteBloqueadoConteudo');
         
-        let indiceClienteFocado = -1; // 🌟 Controla qual linha está selecionada via teclado
+        let indiceClienteFocado = -1; 
 
-        // Função isolada para processar a escolha e fixação do cliente na tela
         function selecionarClienteManual(cliente) {
             inputBuscaCliente.value = cliente.nome;
             hiddenClienteId.value = cliente.id;
             divSugestoes.style.display = 'none';
             indiceClienteFocado = -1;
 
-            // Alerta visual de bloqueio integrado
+            // Alerta visual de bloqueio integrado de forma totalmente segura
             if (cliente.bloqueado === 'S') {
-                cardAlertaBloqueio.innerHTML = `🛑 <strong>Cliente Bloqueado:</strong> A inadimplência ou restrição ativa de "${cliente.nome}" impede a aprovação de novos faturamentos e vendas a prazo.`;
-                cardAlertaBloqueio.style.display = 'block';
+                // 🌟 CORRIGIDO: Redirecionado para o span interno mapeado no HTML usando textContent + escaparHTML
+                if (txtAlertaBloqueioConteudo) {
+                    txtAlertaBloqueioConteudo.textContent = `🛑 Cliente Bloqueado: A inadimplência ou restrição ativa de "${cliente.nome}" impede a aprovação de novos faturamentos e vendas a prazo.`;
+                }
+                if (cardAlertaBloqueio) cardAlertaBloqueio.style.display = 'block';
             } else {
-                cardAlertaBloqueio.style.display = 'none';
-                cardAlertaBloqueio.innerText = '';
+                if (cardAlertaBloqueio) cardAlertaBloqueio.style.display = 'none';
+                if (txtAlertaBloqueioConteudo) txtAlertaBloqueioConteudo.textContent = '';
             }
         }
 
-        // Realça visualmente a linha selecionada pelas setas do teclado
         function destacarLinhaTeclado(itens) {
             if (!itens || itens.length === 0) return;
 
-            // Limpa o realce de todas as linhas do autocomplete antes
             Array.from(itens).forEach(item => {
                 item.style.backgroundColor = 'transparent';
             });
 
-            // Se o índice for válido, aplica o fundo de seleção (fundo cinza azulado)
             if (indiceClienteFocado >= 0 && indiceClienteFocado < itens.length) {
                 const itemAlvo = itens[indiceClienteFocado];
                 itemAlvo.style.backgroundColor = '#dee2e6';
-                
-                // Garante que o scroll acompanhe a seleção se a lista for grande
                 itemAlvo.scrollIntoView({ block: 'nearest' });
             }
         }
 
         inputBuscaCliente.addEventListener('input', async () => {
             const termo = inputBuscaCliente.value.trim();
-            if (termo.length < 2) { divSugestoes.style.display = 'none'; indiceClienteFocado = -1; return; }
+            if (termo.length < 2) { 
+                divSugestoes.style.display = 'none'; 
+                indiceClienteFocado = -1; 
+                return; 
+            }
 
             const clientes = await ipcRenderer.invoke('buscar-clientes-pdv', termo);
             divSugestoes.innerHTML = '';
-            indiceClienteFocado = -1; // Reseta o índice a cada nova busca
+            indiceClienteFocado = -1; 
 
             if (clientes.length === 0) {
+                // 🌟 SEGURO: Layout estático sem variáveis dinâmicas no innerHTML
                 divSugestoes.innerHTML = `<div style="padding: 10px; color: #888; font-style: italic; font-size: 14px;">Nenhum cliente localizado...</div>`;
                 divSugestoes.style.display = 'block';
                 return;
@@ -2158,14 +2306,13 @@
 
             clientes.forEach(c => {
                 const item = document.createElement('div');
-                item.className = 'item-sugestao-cliente'; // Classe auxiliar de seletor
-                item.style.padding = '10px 12px';
-                item.style.cursor = 'pointer';
-                item.style.borderBottom = '1px solid #eee';
-                item.style.fontSize = '14px';
+                item.className = 'item-sugestao-cliente'; 
+                item.style.cssText = "padding: 10px 12px; cursor: pointer; border-bottom: 1px solid #eee; font-size: 14px;";
                 
                 const tagBloqueio = c.bloqueado === 'S' ? ' <span style="color:red; font-weight:bold;">[BLOQUEADO]</span>' : '';
-                item.innerHTML = `<strong>${c.nome}</strong> - ${c.cpf || 'Sem CPF'} ${tagBloqueio}`;
+                
+                // 🌟 CORRIGIDO: Propriedades do banco passam por escaparHTML antes de entrarem na string do DOM
+                item.innerHTML = `<strong>${escaparHTML(c.nome)}</strong> - ${escaparHTML(c.cpf || 'Sem CPF')} ${tagBloqueio}`;
                 
                 // Evento de clique físico com o mouse mantido
                 item.addEventListener('click', () => selecionarClienteManual(c));
@@ -2185,43 +2332,42 @@
             divSugestoes.style.display = 'block';
         });
 
-        // 🌟 NOVO INTERCEPTADOR: Captura e gerencia as teclas direcionais dentro do input de busca
+        // 🌟 INTERCEPTADOR DO TECLADO: Captura e gerencia as teclas direcionais de forma estável
         inputBuscaCliente.addEventListener('keydown', (e) => {
             const itensLinhas = divSugestoes.getElementsByClassName('item-sugestao-cliente');
             
             if (divSugestoes.style.display === 'none' || itensLinhas.length === 0) return;
 
             if (e.key === 'ArrowDown') {
-                // Seta para Baixo
-                e.preventDefault(); // Impede o cursor de ir para o fim do texto
+                e.preventDefault(); 
                 indiceClienteFocado++;
-                if (indiceClienteFocado >= itensLinhas.length) indiceClienteFocado = 0; // Volta para o primeiro
+                if (indiceClienteFocado >= itensLinhas.length) indiceClienteFocado = 0; 
                 destacarLinhaTeclado(itensLinhas);
             } 
             else if (e.key === 'ArrowUp') {
-                // Seta para Cima
                 e.preventDefault();
                 indiceClienteFocado--;
-                if (indiceClienteFocado < 0) indiceClienteFocado = itensLinhas.length - 1; // Vai para o último
+                if (indiceClienteFocado < 0) indiceClienteFocado = itensLinhas.length - 1; 
                 destacarLinhaTeclado(itensLinhas);
             } 
             else if (e.key === 'Enter') {
-                // Tecla Enter
                 if (indiceClienteFocado >= 0 && indiceClienteFocado < itensLinhas.length) {
-                    e.preventDefault(); // Evita que o Enter submeta o formulário antes da hora
+                    e.preventDefault(); 
                     const itemSelecionado = itensLinhas[indiceClienteFocado];
                     selecionarClienteManual(itemSelecionado.dadosCliente);
                 }
             }
             else if (e.key === 'Escape') {
-                // Tecla Esc limpa e fecha a caixa
                 divSugestoes.style.display = 'none';
                 indiceClienteFocado = -1;
             }
         });
 
         document.addEventListener('click', (e) => {
-            if (e.target !== inputBuscaCliente && e.target !== divSugestoes) { divSugestoes.style.display = 'none'; indiceClienteFocado = -1; }
+            if (e.target !== inputBuscaCliente && e.target !== divSugestoes) { 
+                divSugestoes.style.display = 'none'; 
+                indiceClienteFocado = -1; 
+            }
         });
 
         inputBuscaCliente.addEventListener('blur', () => {
@@ -2229,29 +2375,31 @@
                 if (inputBuscaCliente.value.trim() === "") {
                     inputBuscaCliente.value = "";
                     hiddenClienteId.value = "00000000-0000-0000-0000-000000000000";
-                    cardAlertaBloqueio.style.display = 'none';
-                    cardAlertaBloqueio.innerText = '';
+                    
+                    // 🌟 CORRIGIDO: Resets de campos textuais direcionados para textContent
+                    if (cardAlertaBloqueio) cardAlertaBloqueio.style.display = 'none';
+                    const txtAlerta = document.getElementById('txtAlertaClienteBloqueadoConteudo');
+                    if (txtAlerta) txtAlerta.textContent = '';
                 }
-            }, 200); // Pequeno atraso para dar tempo de registrar o clique se for com mouse
+            }, 200); 
         });
 
         // Função chamada ao clicar no ícone da impressora verde na tabela
         window.reimprimirCrediario = async (vendaId) => {
-            // Alterado de send para invoke para acompanhar a evolução não-bloqueante da arquitetura
             await ipcRenderer.invoke('imprimir-comprovante-crediario', vendaId);
         };
 
-        // 🌟 FUNÇÃO DE ATUALIZAÇÃO DO BADGE DE REDE SUPERIOR
+        // 🌟 FUNÇÃO DE ATUALIZAÇÃO DO BADGE DE REDE SUPERIOR (CORRIGIDA COM textContent)
         function atualizarBadgeRedeSuperior(isOnline) {
             const badgeRede = document.getElementById('badgeRede');
             if (!badgeRede) return;
 
             if (isOnline) {
                 badgeRede.className = 'badge-online';
-                badgeRede.innerText = 'ONLINE';
+                badgeRede.textContent = 'ONLINE';
             } else {
                 badgeRede.className = 'badge-offline';
-                badgeRede.innerText = 'OFFLINE';
+                badgeRede.textContent = 'OFFLINE';
             }
         }
 
